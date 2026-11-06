@@ -1,7 +1,7 @@
 package mihomo
 
-// 首次启动向导：检测本机 » 选择配置来源（订阅 / 配置链接 / 粘贴） »  按本机情况优化 » 运行偏好 » 应用。
-// 订阅链接下载后自动识别：完整配置走「导入 + 优化」，节点订阅走「内置模板」。
+// 首次启动向导：检测本机 » 选择配置来源（订阅链接 / 内置模板 / 粘贴） »  按本机情况优化 » 运行偏好 » 应用。
+// 订阅链接下载后自动识别：完整配置走「导入 + 优化」，节点订阅走「内置模板」；有多个订阅时直接选「内置模板」逐个填写。
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -68,7 +68,33 @@ private fun setupUrl(value: String): String {
     return text
 }
 
-internal enum class SetupSource { Subscription, Paste }
+internal enum class SetupSource { Subscription, Template, Paste }
+
+internal data class SetupSub(val name: String = "", val url: String = "", val ua: String = "")
+
+internal const val MAX_SETUP_SUBS = 32
+
+/** 内置模板的订阅行：忽略整行为空的行，名称留空时按行号补「订阅N」（避开已有名称）。规则与 LuCI 向导一致。 */
+internal fun setupSubs(rows: List<SetupSub>): List<JsonObject> {
+    val kept = rows.map { SetupSub(it.name.trim(), it.url.trim(), it.ua.trim()) }
+        .filter { it.name.isNotEmpty() || it.url.isNotEmpty() || it.ua.isNotEmpty() }
+    require(kept.isNotEmpty()) { "至少需要一个订阅" }
+    require(kept.size <= MAX_SETUP_SUBS) { "订阅过多（最多 $MAX_SETUP_SUBS 个）" }
+    val used = kept.map { it.name }.filter { it.isNotEmpty() }.toMutableSet()
+    val seen = mutableSetOf<String>()
+    return kept.mapIndexed { index, row ->
+        val name = row.name.ifEmpty {
+            var k = index + 1
+            while ("订阅$k" in used) k++
+            "订阅$k".also { used += it }
+        }
+        require(name.length <= 64) { "订阅名称「$name」过长（最多 64 个字符）" }
+        require(seen.add(name)) { "订阅名称重复：$name" }
+        require(row.url.isNotEmpty()) { "订阅「$name」缺少地址" }
+        require(Regex("https?://[^/\\s?#]+(?:[/?#]\\S*)?").matches(row.url)) { "订阅「$name」的地址需要以 http:// 或 https:// 开头" }
+        json("name" to name, "url" to row.url, "ua" to row.ua.ifEmpty { null })
+    }
+}
 
 internal data class SetupChange(val id: String, val title: String, val detail: String, val optional: Boolean, val applied: Boolean)
 internal data class SetupStage(val title: String, val detail: String, val state: Int) // 0 进行中 1 成功 2 失败
@@ -93,6 +119,7 @@ internal object SetupState {
     var url by mutableStateOf("")
     var userAgent by mutableStateOf("")
     var pasted by mutableStateOf("")
+    var subs by mutableStateOf(listOf(SetupSub()))
     var imported by mutableStateOf<String?>(null)
     var importedSummary by mutableStateOf<JsonObject?>(null)
     /** 链接下载到完整配置时，用户可选择仅把它当作节点订阅。 */
@@ -222,6 +249,11 @@ internal object SetupState {
                     }
                 }
             }
+            SetupSource.Template -> {
+                val list = setupSubs(subs)
+                asProvider = true
+                detected = "使用内置模板：${list.size} 个订阅（${list.joinToString("、") { it.string("name") }}），包含分流规则、广告拦截与地区策略组。"
+            }
             SetupSource.Paste -> {
                 require(pasted.isNotBlank()) { "请粘贴配置内容" }
 
@@ -244,11 +276,12 @@ internal object SetupState {
     private suspend fun buildBase(): String {
         val content = imported
         if (content != null && !asProvider) return content
-        val address = setupUrl(url)
-        val name = Regex("^https?://([^/:?#]+)").find(address)?.groupValues?.get(1)?.substringBefore('.')?.take(16)?.ifBlank { null } ?: "订阅"
-        val payload = mutableMapOf<String, JsonElement>(
-            "subscriptions" to JsonArray(listOf(json("name" to name, "url" to address, "ua" to userAgent.trim().ifEmpty { null }))),
-        )
+        val list = if (source == SetupSource.Template) setupSubs(subs) else {
+            val address = setupUrl(url)
+            val name = Regex("^https?://([^/:?#]+)").find(address)?.groupValues?.get(1)?.substringBefore('.')?.take(16)?.ifBlank { null } ?: "订阅"
+            listOf(json("name" to name, "url" to address, "ua" to userAgent.trim().ifEmpty { null }))
+        }
+        val payload = mutableMapOf<String, JsonElement>("subscriptions" to JsonArray(list))
         val mirror = host?.string("mirror").orEmpty()
         if (mirror.isNotEmpty()) {
             payload["uiUrl"] = JsonPrimitive(mirror + "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip")
@@ -453,8 +486,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.setupHost() {
 private fun androidx.compose.foundation.lazy.LazyListScope.setupSource() {
     val state = SetupState
     group("来源", "source") {
-        SourceOption("订阅链接", "机场提供的订阅或 Clash 配置链接，自动识别类型", state.source == SetupSource.Subscription) {
+        SourceOption("订阅链接（推荐）", "机场提供的订阅或 Clash 配置链接，自动识别类型", state.source == SetupSource.Subscription) {
             state.source = SetupSource.Subscription
+        }
+        SourceOption("内置模板", "填写一个或多个节点订阅，使用内置的分流规则与地区策略组", state.source == SetupSource.Template) {
+            state.source = SetupSource.Template
         }
         SourceOption("粘贴配置", "已有的 mihomo / Clash Meta 配置文件内容", state.source == SetupSource.Paste) {
             state.source = SetupSource.Paste
@@ -467,6 +503,25 @@ private fun androidx.compose.foundation.lazy.LazyListScope.setupSource() {
                 InputField("User-Agent（可选，默认 clash.meta）", state.userAgent, enabled = state.busy.isEmpty()) { state.userAgent = it }
             }
         }
+        SetupSource.Template -> {
+            val idle = state.busy.isEmpty()
+            state.subs.forEachIndexed { index, sub ->
+                group("订阅 ${index + 1}", "sub$index") {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        fun edit(row: SetupSub) { state.subs = state.subs.toMutableList().also { it[index] = row } }
+                        InputField("名称（可选，默认 订阅${index + 1}）", sub.name, enabled = idle) { edit(sub.copy(name = it)) }
+                        InputField("订阅地址", sub.url, enabled = idle) { edit(sub.copy(url = it)) }
+                        InputField("User-Agent（可选）", sub.ua, enabled = idle) { edit(sub.copy(ua = it)) }
+                    }
+                    if (state.subs.size > 1) ButtonRow {
+                        ActionButton("删除", enabled = idle) { state.subs = state.subs.filterIndexed { i, _ -> i != index } }
+                    }
+                }
+            }
+            if (state.subs.size < MAX_SETUP_SUBS) item(key = "sub-add") {
+                ButtonRow { ActionButton("添加订阅", enabled = state.busy.isEmpty()) { state.subs = state.subs + SetupSub() } }
+            }
+        }
         SetupSource.Paste -> group("配置内容", "paste") {
             Column(Modifier.padding(16.dp)) {
                 InputField("粘贴 YAML", state.pasted, singleLine = false, minLines = 8, maxLines = 16, enabled = state.busy.isEmpty()) {
@@ -476,7 +531,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.setupSource() {
         }
     }
     item(key = "hint") {
-        Caption("导入后会保留你的节点、策略组与规则，只调整与手机运行相关的设置；每一项都会在下一步列出，可逐项取消。")
+        Caption(if (state.source == SetupSource.Template)
+            "模板内容：按地区自动选择的 Smart 策略组、国内直连与国外代理分流、广告拦截与 zashboard 面板；与手机运行相关的调整会在下一步列出，可逐项取消。"
+        else "导入后会保留你的节点、策略组与规则，只调整与手机运行相关的设置；每一项都会在下一步列出，可逐项取消。")
     }
 }
 
