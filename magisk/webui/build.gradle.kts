@@ -44,4 +44,5 @@ compose.resources {
 tasks.named<Copy>("wasmJsProcessResources") {
     from("bridge")
     from("../../shared/template.yaml")
+    from("../../shared/proxylink.js")
 }

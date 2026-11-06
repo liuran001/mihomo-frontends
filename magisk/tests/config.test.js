@@ -16,6 +16,7 @@ const context = { crypto: webcrypto };
 context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(bridge, 'vendor/yaml.min.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../../shared/proxylink.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(bridge, 'config.js'), 'utf8'), context);
 const C = context.mihomoConfig;
 const Y = context.YAML;
@@ -414,4 +415,116 @@ test('lint reports YAML errors with positions and never throws', () => {
   assert.ok(bad.every((item) => item.line >= 1 && item.col >= 1), JSON.stringify(bad));
   assert.match(C.lint('- 1\n- 2\n').problems[0].message, /映射/);
   assert.equal(C.lint('').problems.length, 0);
+});
+
+const nodeConfig = `# 节点测试
+proxies:
+  - {name: DNS_Hijack, type: dns}
+  - name: 旧节点
+    type: ss
+    server: a.example
+    port: 443
+    cipher: aes-128-gcm
+    password: x
+x-group: &g
+  type: select
+  proxies: [旧节点]
+proxy-groups:
+  - name: 节点选择
+    type: select
+    proxies: [旧节点, DIRECT]
+  - name: 继承
+    <<: *g
+  - name: 全部
+    type: url-test
+    include-all: true
+  - name: 单独
+    type: select
+    use: [机场]
+proxy-providers:
+  机场: {type: http, url: "https://example.com/s", path: ./p.yaml}
+rule-providers:
+  cn: {type: http, behavior: domain, url: "https://example.com/cn.mrs", format: mrs, path: ./cn.mrs, proxy: 旧节点}
+dns:
+  nameserver: ["https://1.1.1.1/dns-query#旧节点"]
+rules:
+  # 注释保留
+  - DOMAIN,a.test,旧节点
+  - DOMAIN,b.test,旧节点,no-resolve
+  - MATCH,节点选择
+`;
+
+test('node schema lists nodes with lock reasons and group editability', () => {
+  const schema = JSON.parse(JSON.stringify(C.schema(nodeConfig).nodes));
+  assert.deepEqual(schema.list.map((item) => [item.name, !!item.lock, item.groups.join('|')]), [['DNS_Hijack', true, ''], ['旧节点', false, '节点选择|继承']]);
+  assert.deepEqual(schema.groups.map((group) => [group.name, group.auto, group.editable]), [['节点选择', false, true], ['继承', false, false], ['全部', true, true], ['单独', false, true]]);
+  assert.equal(schema.list[1].data.cipher, 'aes-128-gcm');
+});
+
+test('proxy.add appends nodes and joins chosen groups', () => {
+  const HK = { name: '🇭🇰 HK 01', type: 'trojan', server: 'hk.example', port: '443', password: 'pw', udp: true };
+  const VL = { name: 'US/1', type: 'vless', server: 'us.example', port: 8443, uuid: 'u', network: 'ws', 'ws-opts': { path: '/v', headers: { Host: 'cdn.example' } } };
+  const added = plain(C.patch(nodeConfig, [{ op: 'proxy.add', nodes: [HK, VL], groups: ['节点选择', '单独', '全部'] }]).content);
+  assert.deepEqual([added.proxies.length, added.proxies[2].port, added.proxies[3]['ws-opts'].headers.Host], [4, 443, 'cdn.example']);
+  assert.deepEqual(added['proxy-groups'][0].proxies, ['旧节点', 'DIRECT', '🇭🇰 HK 01', 'US/1']);
+  assert.deepEqual(added['proxy-groups'][3].proxies, ['🇭🇰 HK 01', 'US/1']);
+  assert.equal(added['proxy-groups'][2].proxies, undefined);
+  const add = (node, groups) => () => C.patch(nodeConfig, [{ op: 'proxy.add', nodes: [node], groups }]);
+  assert.throws(add({ ...HK, name: '节点选择' }), /已被占用/);
+  assert.throws(add({ ...HK, name: '机场' }), /已被占用/);
+  assert.throws(add({ ...HK, name: 'a,b' }), /名称无效/);
+  assert.throws(add({ ...HK, type: 'snell' }), /不支持/);
+  assert.throws(add({ ...HK, port: 70000 }), /端口无效/);
+  assert.throws(add({ ...HK, server: 'a b' }), /服务器/);
+  assert.throws(add({ ...HK, '<<': { x: 1 } }), /无效的字段/);
+  assert.throws(add({ ...HK, extra: { a: { b: { c: { d: 1 } } } } }), /无效的字段/);
+  assert.throws(add(HK, ['继承']), /继承自锚点/);
+  assert.throws(add(HK, ['不存在']), /不存在/);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.add', nodes: [HK, HK] }]), /已被占用/);
+  const fresh = plain(C.patch('rules:\n  - MATCH,DIRECT\n', [{ op: 'proxy.add', nodes: [HK] }]).content);
+  assert.equal(fresh.proxies[0].name, '🇭🇰 HK 01');
+});
+
+test('proxy.set renames references and keeps comments; unchanged nodes leave the file alone', () => {
+  const node = C.schema(nodeConfig).nodes.list[1].data;
+  const content = C.patch(nodeConfig, [{ op: 'proxy.set', name: '旧节点', data: { ...node, name: '新节点', port: 8443 }, groups: ['节点选择', '继承'] }]).content;
+  const data = plain(content);
+  assert.deepEqual([data.proxies[1].name, data.proxies[1].port, data.rules.slice(0, 2), data['rule-providers'].cn.proxy, data.dns.nameserver[0]],
+    ['新节点', 8443, ['DOMAIN,a.test,新节点', 'DOMAIN,b.test,新节点,no-resolve'], '新节点', 'https://1.1.1.1/dns-query#新节点']);
+  assert.deepEqual([data['proxy-groups'][0].proxies, data['proxy-groups'][1].proxies], [['新节点', 'DIRECT'], ['新节点']]);
+  assert.match(content, /# 注释保留/);
+  assert.match(content, /x-group: &g/);
+  assert.equal(C.patch(nodeConfig, [{ op: 'proxy.set', name: '旧节点', data: { ...node }, groups: ['节点选择', '继承'] }]).content, nodeConfig);
+  const left = plain(C.patch(nodeConfig, [{ op: 'proxy.set', name: '旧节点', data: node, groups: ['继承', '单独'] }]).content);
+  assert.deepEqual([left['proxy-groups'][0].proxies, left['proxy-groups'][3].proxies], [['DIRECT'], ['旧节点']]);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.set', name: '旧节点', data: node, groups: ['节点选择'] }]), /继承自锚点/);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.set', name: '旧节点', data: { ...node, name: '节点选择' } }]), /已被占用/);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.set', name: 'DNS_Hijack', data: node }]), /DNS 出站/);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.set', name: 'Nope', data: node }]), /不存在/);
+});
+
+test('proxy.delete refuses referenced nodes and removes group members', () => {
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.delete', name: '旧节点' }]), (error) =>
+    /规则第 2 条/.test(error.message) && /规则集 cn/.test(error.message) && /DNS 服务器/.test(error.message));
+  const free = 'proxies:\n  - {name: a, type: socks5, server: 1.1.1.1, port: 1}\n  - {name: b, type: socks5, server: 1.1.1.1, port: 2}\n'
+    + 'proxy-groups:\n  - {name: g, type: select, proxies: [a, b]}\n  - {name: h, type: select, proxies: [a], use: [p]}\n  - {name: i, type: select, proxies: [b]}\n'
+    + 'proxy-providers:\n  p: {type: http, url: "https://e.com/s", path: ./p.yaml}\nrules:\n  - MATCH,g\n';
+  const removed = plain(C.patch(free, [{ op: 'proxy.delete', name: 'a' }]).content);
+  assert.deepEqual([removed.proxies.map((item) => item.name), removed['proxy-groups'][0].proxies, removed['proxy-groups'][1].proxies], [['b'], ['b'], undefined]);
+  assert.throws(() => C.patch(free, [{ op: 'proxy.delete', name: 'b' }]), /只包含/);
+  assert.throws(() => C.patch(nodeConfig, [{ op: 'proxy.delete', name: 'DNS_Hijack' }]), /DNS 出站/);
+});
+
+test('node links parse and forms round-trip through the engine', () => {
+  const J = (value) => JSON.parse(JSON.stringify(value));
+  const parsed = J(C.nodeParse('trojan://pw@hk.example:443?sni=s.example#HK' + String.fromCharCode(10) + 'bad://x', ['HK']));
+  assert.deepEqual([parsed.nodes[0].node.name, parsed.nodes[0].summary, parsed.errors.length], ['HK 2', 'Trojan · hk.example:443', 1]);
+  const form = J(C.nodeForm('vless', { name: 'a', type: 'vless', server: 's', port: 1, uuid: 'u', network: 'ws', foo: 1 }));
+  assert.equal(form.values.network, 'ws');
+  assert.deepEqual(form.extra, ['foo']);
+  assert.deepEqual(form.fields.find((field) => field.key === 'ws-opts.path').when, { key: 'network', in: ['ws'] });
+  assert.ok(form.types.some((item) => item.id === 'hysteria2'));
+  const built = J(C.nodeBuild({ name: 'a', type: 'vless', server: 's', port: 1, uuid: 'u', foo: 1 }, 'vless', { ...form.values, port: '2', network: 'grpc', 'grpc-opts.grpc-service-name': 'svc' }));
+  assert.deepEqual([built.node.port, built.node.foo, built.node['grpc-opts']['grpc-service-name']], [2, 1, 'svc']);
+  assert.throws(() => C.nodeBuild({}, 'vless', { name: 'a', server: 's', port: '1' }), /UUID/);
 });

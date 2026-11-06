@@ -109,6 +109,9 @@ internal object ProfileState {
     var providerTemplate by mutableStateOf<List<ConfigField>>(emptyList())
     var ruleProviderTemplate by mutableStateOf<List<ConfigField>>(emptyList())
     var summary by mutableStateOf<JsonObject?>(null)
+    /** 单个节点：显示的是暂存修改后的结果；撤销时回到 baseNodes。 */
+    var nodes by mutableStateOf(NodeView())
+    private var baseNodes = NodeView()
     /** 待保存的修改：字段 id » 新值，以及集合操作。 */
     var edits by mutableStateOf<Map<String, JsonElement>>(emptyMap())
     var collectionOps by mutableStateOf<List<JsonObject>>(emptyList())
@@ -154,6 +157,17 @@ internal object ProfileState {
         providerTemplate = schema.objects("providerFields").map { it.field() }
         ruleProviderTemplate = schema.objects("ruleProviderFields").map { it.field() }
         summary = schema["summary"] as? JsonObject
+        nodes = nodeView(schema["nodes"])
+        baseNodes = nodes
+    }
+
+    /** 暂存一项节点修改：先在本地连同已暂存的修改试算一遍，失败时抛出原因，成功后刷新节点列表。 */
+    suspend fun stage(op: JsonObject) {
+        val content = source ?: error("还没有配置")
+        val patched = request("configPatch", JsonObject(mapOf("content" to JsonPrimitive(content), "ops" to JsonArray(ops() + op)))).string("content")
+        nodes = nodeView(request("configSchema", json("content" to patched))["nodes"])
+        collectionOps = collectionOps + op
+        notice = ""
     }
 
     fun set(field: ConfigField, value: JsonElement) {
@@ -171,6 +185,7 @@ internal object ProfileState {
     fun discard() {
         edits = emptyMap()
         collectionOps = emptyList()
+        nodes = baseNodes
         error = ""
     }
 
@@ -230,6 +245,8 @@ fun ProfilePage(onBack: () -> Unit) {
     var opened by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ConfigField?>(null) }
     var item by remember { mutableStateOf<Pair<String, ConfigItem?>?>(null) }
+    var node by remember { mutableStateOf<NodeTarget?>(null) }
+    var paste by remember { mutableStateOf(false) }
     var confirmSave by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { state.load() }
     val section = state.sections.firstOrNull { it.id == opened }
@@ -275,6 +292,9 @@ fun ProfilePage(onBack: () -> Unit) {
                 }
                 ArrowRow("添加订阅", "填入机场提供的订阅链接", startIcon = MiuixIcons.Regular.Add) { item = "provider" to null }
             }
+            group("单个节点", "nodes") {
+                NodeRows(onOpen = { node = NodeTarget(it) }, onPaste = { paste = true })
+            }
             group("规则集", "ruleProviders") {
                 for (ruleSet in state.ruleProviders) {
                     val behavior = ruleSet.fields.firstOrNull { it.id == "behavior" }
@@ -309,6 +329,8 @@ fun ProfilePage(onBack: () -> Unit) {
     }
     FieldEditor(editing, onDismiss = { editing = null }) { field, value -> state.set(field, value); editing = null }
     ItemSheet(item, onDismiss = { item = null })
+    NodeSheet(node, onDismiss = { node = null })
+    NodePasteSheet(paste, onDismiss = { paste = false })
     SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
 }
 

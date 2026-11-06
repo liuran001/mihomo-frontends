@@ -378,7 +378,7 @@
       fields: RULE_PROVIDER_FIELDS.map((field) => ({ ...fieldState(field, isObject(item) ? item : {}, null, extra), id: field.key.join('.'), path: field.key })),
     }));
     return { ok: true, sections, providers, ruleProviders, ...tailscaleSchema(data), providerFields: PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
-      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), summary: summarize(doc, data) };
+      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), nodes: nodeSchema(doc, data), summary: summarize(doc, data) };
   }
 
   function tailscaleSchema(data) {
@@ -443,6 +443,7 @@
   // ops: [{op:'set', path:[...], value}] 由 SECTIONS 字段约束；
   //      {op:'provider.set', name, values:{'url':..}} / {op:'provider.add', name, values} / {op:'provider.delete', name}
   //      {op:'ruleProvider.set|add|delete', ...}
+  //      {op:'proxy.add', nodes:[...], groups:[...]} / {op:'proxy.set', name, data, groups} / {op:'proxy.delete', name}
 
   function patch(content, ops) {
     if (!Array.isArray(ops) || !ops.length) throw new Error('没有要保存的修改');
@@ -454,6 +455,7 @@
       if (op.op === 'set') applySet(doc, data, op);
       else if (/^(provider|ruleProvider)\.(set|add|delete)$/.test(op.op)) applyCollection(doc, data, op);
       else if (/^tailscale\.(set|add|delete|webui|serve)$/.test(op.op)) applyTailscale(doc, data, op);
+      else if (/^proxy\.(set|add|delete)$/.test(op.op)) applyProxy(doc, data, op);
       else throw new Error('不支持的修改：' + op.op);
     }
     const output = dump(doc);
@@ -698,6 +700,363 @@
       }
     }
     if (!plain(doc).proxies[index].hostname) throw new Error('设备名不能为空');
+  }
+
+  // ---------- 单个节点 ----------
+  // 与 LuCI forms.uc 的 proxy.add / proxy.set / proxy.delete 语义一致：
+  // 改名时同步策略组成员、规则出站、前置代理、规则集/订阅/入站的 proxy 与 DNS 的 #名称；删除前检查引用。
+
+  // 表单支持的类型（与 shared/proxylink.js 的 PROTOCOLS 一致）；其他类型只列出、可删除
+  const NODE_TYPES = ['ss', 'ssr', 'vmess', 'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'anytls', 'socks5', 'http', 'wireguard'];
+  const MAX_NODES = 256;
+  const NODE_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
+
+  function nodeName(value) {
+    if (typeof value !== 'string' || !value || value !== value.trim() || value.length > 128 || /[,\x00-\x1f\x7f]/.test(value)) return null;
+    return value;
+  }
+
+  function resolved(doc, node) {
+    return Y.isAlias(node) ? node.resolve(doc) : node;
+  }
+
+  function ownKey(map, key) {
+    return Y.isMap(map) && map.items.some((pair) => Y.isScalar(pair.key) && pair.key.value === key);
+  }
+
+  function hasMerge(map) {
+    return Y.isMap(map) && map.items.some((pair) => isMergeKey(pair.key));
+  }
+
+  // 合并键引用的映射（<<: *a 或 <<: [*a, *b]）
+  function mergeSources(doc, map) {
+    const out = [];
+    for (const pair of Y.isMap(map) ? map.items : []) {
+      if (!isMergeKey(pair.key)) continue;
+      const values = Y.isSeq(pair.value) ? pair.value.items : [pair.value];
+      for (const value of values) {
+        const source = resolved(doc, value);
+        if (Y.isMap(source)) out.push(source);
+      }
+    }
+    return out;
+  }
+
+  function seqItem(doc, key, index) {
+    const seq = doc.get(key, true);
+    return Y.isSeq(seq) ? resolved(doc, seq.items[index]) : null;
+  }
+
+  function nodeLock(doc, item, index) {
+    item = isObject(item) ? item : {};
+    if (item.type === 'tailscale') return 'Tailscale 出站请在 Tailscale 页管理';
+    if (item.type === 'dns') return '内置的 DNS 出站，用于接管 53 端口';
+    if (hasMerge(seqItem(doc, 'proxies', index))) return '使用了锚点合并（<<），请在配置原文中编辑';
+    if (!NODE_TYPES.includes(item.type)) return '表单暂不支持 ' + (item.type || '?') + ' 类型，请在配置原文中编辑';
+    return null;
+  }
+
+  // 策略组：auto 为自动包含全部节点（include-all / include-all-proxies）；editable 为能否直接改成员（经锚点继承的不能）
+  function nodeGroups(doc, data) {
+    const list = Array.isArray(data['proxy-groups']) ? data['proxy-groups'] : [];
+    return list.map((group, index) => {
+      group = isObject(group) ? group : {};
+      const map = seqItem(doc, 'proxy-groups', index);
+      const explicit = ownKey(map, 'proxies');
+      const auto = group['include-all'] === true || group['include-all-proxies'] === true;
+      return {
+        index, name: String(group.name || ''), type: String(group.type || ''), auto, explicit,
+        editable: explicit || !hasMerge(map),
+        members: Array.isArray(group.proxies) ? group.proxies.map(String) : [],
+        others: (Array.isArray(group.use) && group.use.length > 0) || auto || group['include-all-providers'] === true,
+      };
+    });
+  }
+
+  // 策略组里实际存放成员的列表（含锚点里的，去重）
+  function groupSeqs(doc) {
+    const seqs = new Set();
+    const groups = doc.get('proxy-groups', true);
+    for (const item of Y.isSeq(groups) ? groups.items : []) {
+      const map = resolved(doc, item);
+      if (!Y.isMap(map)) continue;
+      for (const source of [map].concat(mergeSources(doc, map))) {
+        const seq = source.get('proxies', true);
+        if (Y.isSeq(seq)) { seqs.add(seq); break; }
+      }
+    }
+    return Array.from(seqs);
+  }
+
+  function scalarIs(node, name) {
+    return Y.isScalar(node) && String(node.value) === name;
+  }
+
+  function nodeSchema(doc, data) {
+    if (data.proxies != null && !Array.isArray(data.proxies)) return { unsupported: 'proxies 不是列表，请在配置原文中编辑' };
+    const groups = nodeGroups(doc, data);
+    const list = (Array.isArray(data.proxies) ? data.proxies : []).map((item, index) => {
+      const node = isObject(item) ? item : {};
+      const lock = nodeLock(doc, node, index);
+      const entry = {
+        name: String(node.name || ''), type: String(node.type || ''), server: node.server == null ? '' : String(node.server),
+        port: node.port == null ? '' : String(node.port), lock: lock || '',
+        groups: groups.filter((group) => group.members.includes(String(node.name || ''))).map((group) => group.name),
+      };
+      if (!lock) entry.data = node;
+      return entry;
+    });
+    return {
+      list, types: NODE_TYPES, policies: policies(data),
+      groups: groups.map((group) => ({ name: group.name, type: group.type, auto: group.auto, editable: group.editable })),
+    };
+  }
+
+  function nodes(content) {
+    const doc = parse(content);
+    return { ok: true, ...nodeSchema(doc, plain(doc)) };
+  }
+
+  // 节点字段的通用校验：键名、字符串长度、列表与嵌套深度有上限；协议细节由保存前的 mihomo -t 校验
+  function nodeValue(value, depth) {
+    if (typeof value === 'string') return value.length <= 4096 && !/[\x00-\x08\x0b-\x1f\x7f]/.test(value) ? value : undefined;
+    if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return value;
+    if (depth >= 4) return undefined;
+    if (Array.isArray(value)) {
+      if (value.length > 64) return undefined;
+      const out = [];
+      for (const entry of value) {
+        const checked = nodeValue(entry, depth + 1);
+        if (checked === undefined) return undefined;
+        out.push(checked);
+      }
+      return out;
+    }
+    if (isObject(value)) {
+      const keys = Object.keys(value);
+      if (keys.length > 64) return undefined;
+      const out = {};
+      for (const key of keys) {
+        if (!NODE_KEY.test(key)) return undefined;
+        const checked = nodeValue(value[key], depth + 1);
+        if (checked === undefined) return undefined;
+        out[key] = checked;
+      }
+      return out;
+    }
+    return undefined;
+  }
+
+  function checkNode(item) {
+    if (!isObject(item)) throw new Error('节点无效');
+    const name = nodeName(item.name);
+    if (name === null) throw new Error('节点名称无效：不能为空、首尾不能有空格、不能包含英文逗号，最长 128 个字符');
+    if (!NODE_TYPES.includes(item.type)) throw new Error('节点「' + name + '」的类型不支持：' + (item.type || ''));
+    if (typeof item.server !== 'string' || !item.server || item.server.length > 255 || /\s/.test(item.server)) throw new Error('节点「' + name + '」的服务器地址无效');
+    let port;
+    try { port = check.port(item.port); } catch (error) { throw new Error('节点「' + name + '」的端口无效'); }
+    const value = nodeValue(item, 0);
+    if (value === undefined) throw new Error('节点「' + name + '」包含无效的字段');
+    // 名称与类型放在最前面，便于阅读
+    value.port = port;
+    const out = { name, type: item.type };
+    for (const [key, entry] of Object.entries(value)) if (key !== 'name' && key !== 'type') out[key] = entry;
+    return out;
+  }
+
+  function sameValue(a, b) {
+    if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
+    if (isObject(a) || isObject(b)) {
+      if (!isObject(a) || !isObject(b)) return false;
+      const keys = Object.keys(a);
+      return keys.length === Object.keys(b).length && keys.every((key) => key in b && sameValue(a[key], b[key]));
+    }
+    return a === b;
+  }
+
+  function nodeIndex(data, name) {
+    return (Array.isArray(data.proxies) ? data.proxies : []).findIndex((item) => isObject(item) && item.name === name);
+  }
+
+  // 被占用的名称：节点、策略组、内置策略与订阅
+  function takenNames(data) {
+    return policies(data).concat(Object.keys(isObject(data['proxy-providers']) ? data['proxy-providers'] : {}));
+  }
+
+  function dnsHit(value, name) {
+    if (typeof value === 'string') return value.endsWith('#' + name);
+    if (Array.isArray(value)) return value.some((entry) => dnsHit(entry, name));
+    if (isObject(value)) return Object.values(value).some((entry) => dnsHit(entry, name));
+    return false;
+  }
+
+  // 指向 name 的引用（中文说明）
+  function policyRefs(data, name) {
+    const refs = [];
+    const each = (value) => (Array.isArray(value) ? value : []).filter(isObject);
+    (Array.isArray(data.rules) ? data.rules : []).forEach((rule, index) => {
+      if (typeof rule === 'string' && ruleTarget(rule) === name) refs.push('规则第 ' + (index + 1) + ' 条');
+    });
+    for (const item of each(data.proxies)) if (item['dialer-proxy'] === name) refs.push('节点 ' + item.name + ' 的前置代理');
+    for (const item of each(data['proxy-groups'])) if (item['dialer-proxy'] === name) refs.push('策略组 ' + item.name + ' 的前置代理');
+    for (const [key, item] of Object.entries(isObject(data['rule-providers']) ? data['rule-providers'] : {})) {
+      if (isObject(item) && item.proxy === name) refs.push('规则集 ' + key + ' 的下载方式');
+    }
+    for (const [key, item] of Object.entries(isObject(data['proxy-providers']) ? data['proxy-providers'] : {})) {
+      if (isObject(item) && (item.proxy === name || (isObject(item.override) && item.override['dialer-proxy'] === name))) refs.push('订阅 ' + key);
+    }
+    for (const item of each(data.listeners)) if (item.proxy === name) refs.push('入站 ' + (item.name || item.type) + ' 的出站');
+    if (dnsHit(data.dns, name)) refs.push('DNS 服务器');
+    return refs;
+  }
+
+  // 规则字符串的出站改名（AND/OR 等逻辑规则的出站同样是最后一段）
+  function ruleRetarget(rule, name) {
+    const parts = String(rule).split(',').map((part) => part.trim());
+    let index = parts.length - 1;
+    while (index > 1 && /^(no-resolve|src)$/i.test(parts[index])) index--;
+    parts[index] = name;
+    return parts.join(',');
+  }
+
+  // 改名：只改标量的值，保留注释与格式
+  function renameRefs(doc, old, name) {
+    for (const seq of groupSeqs(doc)) for (const item of seq.items) if (scalarIs(item, old)) item.value = name;
+    const rules = doc.get('rules', true);
+    for (const item of Y.isSeq(rules) ? rules.items : []) {
+      if (Y.isScalar(item) && typeof item.value === 'string' && ruleTarget(item.value) === old) item.value = ruleRetarget(item.value, name);
+    }
+    Y.visit(doc, {
+      Pair(_, pair) {
+        if (Y.isScalar(pair.key) && (pair.key.value === 'dialer-proxy' || pair.key.value === 'proxy') && scalarIs(pair.value, old)) pair.value.value = name;
+      },
+    });
+    const dns = doc.get('dns', true);
+    if (dns) {
+      Y.visit(dns, {
+        Scalar(_, node) {
+          if (typeof node.value === 'string' && node.value.endsWith('#' + old)) node.value = node.value.slice(0, -old.length) + name;
+        },
+      });
+    }
+  }
+
+  // 按勾选的策略组调整成员：groups 为希望包含 name 的策略组；自动包含全部节点的组不改。
+  // 加入时追加到 proxies 末尾（组里还没有时新建）；移出时组里不能因此没有任何出站
+  function applyMembership(doc, name, groups, joinOnly) {
+    if (groups == null) return;
+    if (!Array.isArray(groups)) throw new Error('策略组列表无效');
+    const all = nodeGroups(doc, plain(doc));
+    for (const group of groups) {
+      if (typeof group !== 'string' || !all.some((entry) => entry.name === group)) throw new Error('策略组不存在：' + group);
+    }
+    for (const group of all) {
+      if (group.auto) continue;
+      const want = groups.includes(group.name);
+      const current = group.members.includes(name);
+      if (want === current || (joinOnly && !want)) continue;
+      if (!group.editable) throw new Error('策略组「' + group.name + '」的成员继承自锚点，请在配置原文中编辑');
+      const map = seqItem(doc, 'proxy-groups', group.index);
+      if (want) {
+        const seq = map.get('proxies', true);
+        if (Y.isSeq(seq)) seq.add(doc.createNode(name));
+        else setIn(doc, ['proxy-groups', group.index, 'proxies'], [name]);
+      } else {
+        const left = group.members.filter((member) => member !== name);
+        if (!left.length && !group.others) throw new Error('策略组「' + group.name + '」只剩这个节点，移出后没有可用出站');
+        const seq = map.get('proxies', true);
+        seq.items = seq.items.filter((item) => !scalarIs(item, name));
+        if (!seq.items.length) map.delete('proxies');
+      }
+    }
+  }
+
+  function applyProxy(doc, data, op) {
+    const action = op.op.split('.')[1];
+    if (data.proxies != null && !Array.isArray(data.proxies)) throw new Error('proxies 不是列表，请在配置原文中编辑');
+    if (action === 'add') {
+      const list = op.nodes;
+      if (!Array.isArray(list) || !list.length || list.length > MAX_NODES) throw new Error('一次添加 1–' + MAX_NODES + ' 个节点');
+      if ((Array.isArray(data.proxies) ? data.proxies.length : 0) + list.length > 4096) throw new Error('节点过多');
+      const taken = new Set(takenNames(data));
+      const add = list.map((item) => {
+        const node = checkNode(item);
+        if (taken.has(node.name)) throw new Error('名称已被占用：' + node.name);
+        taken.add(node.name);
+        return node;
+      });
+      if (!Y.isSeq(doc.get('proxies', true))) doc.set('proxies', doc.createNode([]));
+      const seq = doc.get('proxies', true);
+      seq.flow = false;
+      for (const node of add) seq.add(doc.createNode(node));
+      for (const node of add) applyMembership(doc, node.name, op.groups, true);
+      return;
+    }
+    const index = nodeIndex(data, op.name);
+    if (typeof op.name !== 'string' || index < 0) throw new Error('节点不存在：' + (op.name || ''));
+    const current = data.proxies[index];
+    if (action === 'delete') {
+      if (current.type === 'tailscale' || current.type === 'dns') throw new Error(nodeLock(doc, current, index));
+      const refs = policyRefs(data, op.name);
+      if (refs.length) throw new Error('节点「' + op.name + '」正在被使用：' + refs.join('、') + '。请先改成别的出站');
+      const groups = nodeGroups(doc, data);
+      for (const seq of groupSeqs(doc)) {
+        const left = seq.items.filter((item) => !scalarIs(item, op.name));
+        if (left.length === seq.items.length) continue;
+        if (!left.length) {
+          // 只有自己时：组里还有订阅等其他来源才能删掉整个列表
+          const owners = groups.filter((group) => { const map = seqItem(doc, 'proxy-groups', group.index); return Y.isMap(map) && map.get('proxies', true) === seq; });
+          if (!owners.length || owners.some((group) => !group.others)) throw new Error('有策略组只包含「' + op.name + '」，请先给它换一个出站');
+          for (const group of owners) seqItem(doc, 'proxy-groups', group.index).delete('proxies');
+        } else seq.items = left;
+      }
+      doc.get('proxies', true).delete(index);
+      return;
+    }
+    if (action !== 'set') throw new Error('不支持的修改：' + op.op);
+    const lock = nodeLock(doc, current, index);
+    if (lock) throw new Error(lock);
+    const node = checkNode(op.data);
+    if (node.name !== op.name) {
+      if (takenNames(data).includes(node.name)) throw new Error('名称已被占用：' + node.name);
+      renameRefs(doc, op.name, node.name);
+    }
+    if (!sameValue(current, node)) doc.get('proxies', true).set(index, doc.createNode(node));
+    applyMembership(doc, node.name, op.groups, false);
+  }
+
+  // 分享链接解析与节点表单（shared/proxylink.js）
+  function linkLib() {
+    const lib = root.mihomoProxyLink;
+    if (!lib) throw new Error('节点解析模块未加载，请重新安装完整模块');
+    return lib;
+  }
+
+  function nodeParse(text, taken) {
+    const lib = linkLib();
+    const result = lib.parseText(String(text || ''), Array.isArray(taken) ? taken.map(String) : []);
+    return { ok: true, nodes: result.nodes.map((node) => ({ node, summary: lib.summary(node) })), errors: result.errors };
+  }
+
+  // 某类型的表单：字段说明 + 当前值（输入框文字；布尔为 true/false）
+  function nodeForm(type, node) {
+    const lib = linkLib();
+    const option = (entry) => (Array.isArray(entry) ? { id: String(entry[0]), title: String(entry[1]) } : { id: String(entry), title: entry === '' ? '默认' : String(entry) });
+    const fields = lib.fields(type).map((field) => ({
+      key: field.key, label: field.label, kind: field.kind, required: !!field.required, adv: !!field.adv,
+      help: field.help || '', placeholder: field.placeholder || '', options: (field.options || []).map(option),
+      when: field.when ? { key: field.when.key, in: field.when.in.map((value) => (value === true ? 'true' : String(value))) } : null,
+    }));
+    const values = lib.formValues(isObject(node) ? node : {}, type);
+    const known = new Set(lib.fields(type).map((field) => field.key.split('.')[0]));
+    const extra = isObject(node) ? Object.keys(node).filter((key) => !known.has(key) && key !== 'type') : [];
+    return { ok: true, types: lib.PROTOCOLS.map((item) => ({ id: item.type, title: item.label })), fields, values, extra };
+  }
+
+  function nodeBuild(base, type, values) {
+    const result = linkLib().buildNode(isObject(base) ? base : {}, String(type || ''), isObject(values) ? values : {});
+    if (result.error) throw new Error(result.error);
+    return { ok: true, node: result.node, summary: linkLib().summary(result.node) };
   }
 
   // ---------- 分析 ----------
@@ -1041,5 +1400,5 @@
   }
 
   // 订阅转配置时，把多个订阅写进内置模板之后统一走 optimize。
-  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, tailscale, patch, analyze, optimize, check });
+  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, tailscale, nodes, nodeParse, nodeForm, nodeBuild, patch, analyze, optimize, check });
 })(typeof window !== 'undefined' ? window : globalThis);

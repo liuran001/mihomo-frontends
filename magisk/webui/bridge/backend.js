@@ -890,6 +890,20 @@
     return { ok: true, content: b64decode(result.stdout.trim()) };
   });
   register('configSchema', ['content'], (payload) => text(payload.content, 'content'), (payload) => engine().schema(payload.content));
+  register('nodeParse', ['text', 'taken'], (payload) => {
+    text(payload.text, 'text');
+    if (payload.text.length > 1024 * 1024) throw new Error('内容过长');
+    if (payload.taken !== undefined && !Array.isArray(payload.taken)) throw new Error('taken 必须为数组');
+  }, (payload) => engine().nodeParse(payload.text, payload.taken));
+  register('nodeForm', ['type', 'node'], (payload) => {
+    text(payload.type, 'type');
+    if (payload.node !== undefined) assertObject(payload.node);
+  }, (payload) => engine().nodeForm(payload.type, payload.node));
+  register('nodeBuild', ['base', 'type', 'values'], (payload) => {
+    text(payload.type, 'type');
+    if (payload.base !== undefined) assertObject(payload.base);
+    assertObject(payload.values);
+  }, (payload) => engine().nodeBuild(payload.base, payload.type, payload.values));
   register('yamlLint', ['content'], (payload) => text(payload.content, 'content'), (payload) => engine().lint(payload.content));
   register('configAnalyze', ['content'], (payload) => text(payload.content, 'content'), (payload) => engine().analyze(payload.content));
   register('configPatch', ['content', 'ops'], (payload) => {

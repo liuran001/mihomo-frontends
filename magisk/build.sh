@@ -47,7 +47,7 @@ fi
 [ -d "$module_root/scripts" ] && [ ! -L "$module_root/scripts" ] || fail 'scripts 必须是普通目录'
 links=$(find "$web_dist" "$module_root/scripts" -type l -print)
 [ -z "$links" ] || fail '打包源不能包含符号链接'
-for name in index.html mihomo.js bootstrap.js backend.js config.js vendor/yaml.min.js vendor/YAML-LICENSE.txt vendor/qrcode.js vendor/QRCODE-LICENSE.txt template.yaml FONT-LICENSE.txt; do
+for name in index.html mihomo.js bootstrap.js backend.js config.js proxylink.js vendor/yaml.min.js vendor/YAML-LICENSE.txt vendor/qrcode.js vendor/QRCODE-LICENSE.txt template.yaml FONT-LICENSE.txt; do
   [ -f "$web_dist/$name" ] && [ -s "$web_dist/$name" ] || fail "WebUI 产物缺失或为空：$name"
 done
 wasm_files=$(find "$web_dist" -type f -name '*.wasm' -print)
