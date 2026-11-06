@@ -10,7 +10,8 @@ done
 MODDIR=$TEST_DIR
 SCRIPTS=$TEST_DIR/scripts
 MIHOMO_DATA=$TEST_DIR/data
-MIHOMO_START_TIMEOUT=3
+# legacy 用例需要轮询三次（未启动 → 404 → 就绪），CI 机器较慢时留足余量
+MIHOMO_START_TIMEOUT=6
 . "$SCRIPTS/common.sh"
 . "$SCRIPTS/policy-lib.sh"
 ensure_dirs

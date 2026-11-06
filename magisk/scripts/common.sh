@@ -147,6 +147,8 @@ close_inherited_fds() {
   for descriptor_path in /proc/self/fd/*; do
     descriptor=${descriptor_path##*/}
     case "$descriptor" in 0|1|2|''|*[!0-9]*) continue ;; esac
+    # mksh、dash 只认一位数的描述符，exec 12>&- 会被当成命令执行并让整个子 shell 退出；先试一次，不支持就跳过
+    case "$descriptor" in ?) ;; *) (eval "exec $descriptor>&-") 2>/dev/null || continue ;; esac
     eval "exec $descriptor>&-"
   done
 }
