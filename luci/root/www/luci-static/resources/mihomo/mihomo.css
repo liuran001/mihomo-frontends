@@ -400,3 +400,18 @@ div.mh-actions.mh-actions-left{justify-content:flex-start}
 	.mh-subrow>.mh-icon-btn{grid-area:del}
 	.mh-subrow-head{display:none}
 }
+/* 单个节点 */
+.mh-pnode-list,.mh-pnode-preview{display:flex;flex-direction:column;gap:6px}
+.mh-pnode-preview{max-height:260px;overflow:auto;margin:8px 0}
+.mh-pnode{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:var(--radius-base,.5rem);background:var(--surface-sunken,#f6f8fa)}
+.mh-pnode.bad{background:color-mix(in srgb,var(--mh-bad,#d33) 8%,var(--surface,#fff))}
+.mh-pnode-main{flex:1;min-width:0}
+.mh-pnode-main>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mh-pnode-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:.78rem;color:var(--text-muted,#5f666d)}
+.mh-pnode-meta>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.mh-pnode-actions{display:flex;gap:6px;flex-shrink:0}
+.mh-group-pick{display:flex;flex-wrap:wrap;gap:6px 14px}
+.mh-adv{margin:6px 0;border-top:1px dashed var(--hairline,#e3e6ea);padding-top:6px}
+.mh-adv>summary{cursor:pointer;font-weight:600;padding:4px 0}
+.mh-req{color:var(--mh-bad-t,#c00)}
+@media (max-width:600px){.mh-pnode{flex-wrap:wrap}.mh-pnode-actions{width:100%;justify-content:flex-end}}

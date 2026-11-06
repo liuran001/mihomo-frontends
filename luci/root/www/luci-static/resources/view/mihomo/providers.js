@@ -4,8 +4,9 @@
 'require mihomo.api as api';
 'require mihomo.ui as mui';
 'require mihomo.header as header';
+'require mihomo.nodes as nodes';
 
-/* 订阅：配置中的 http 订阅（链接、更新间隔、前缀、UA、健康检查）与运行时信息（节点数、流量、到期）。
+/* 订阅与节点：配置中的 http 订阅（链接、更新间隔、前缀、UA、健康检查）与运行时信息（节点数、流量、到期）。
  * 编辑、新增、停用、删除经 patch 写回配置文件；更新与测速直接调用控制器。 */
 
 // subscriptionInfo：Upload/Download/Total 为字节，Expire 为秒级时间戳（0 表示长期）
@@ -90,6 +91,7 @@ return view.extend({
 		this.updateAllBtn = mui.btn('全部更新', () => this.updateAll(), 'mh-btn-sm');
 		this.grid = E('div', { 'class': 'mh-grid wide mh-provs' }, mui.empty('读取中…'));
 		this.other = E('div', {});
+		this.nodesBox = E('div', {});
 		const toolbar = E('div', { 'class': 'mh-card mh-px-toolbar mh-toolbar' }, [
 			this.countEl,
 			E('span', { 'class': 'mh-grow' }),
@@ -97,7 +99,7 @@ return view.extend({
 			this.updateAllBtn,
 			mui.btn('新增订阅', () => this.edit(null), 'cbi-button-add mh-btn-sm')
 		]);
-		const root = E('div', { 'class': 'mh' }, [ header.render(), this.banner, toolbar, this.grid, this.other ]);
+		const root = E('div', { 'class': 'mh' }, [ header.render(), this.banner, toolbar, this.grid, this.other, this.nodesBox ]);
 		this.refresh();
 		if (this.poller) this.poller.close();
 		this.poller = api.poll(root, 30000, () => this.refreshRuntime(), false);
@@ -105,12 +107,13 @@ return view.extend({
 	},
 
 	refresh() {
-		return api.rpc.sections([ 'providers' ]).then(s => {
+		return api.rpc.sections([ 'providers', 'proxies' ]).then(s => {
 			if (!s || !s.ok) throw new Error((s && s.error) || '读取失败');
 			if (s.parse_error) throw new Error(s.parse_error);
 			if (s.providers.unsupported) throw new Error(s.providers.reason);
 			this.rev = s.rev;
 			this.sec = s.providers;
+			this.nodeSec = s.proxies;
 			return this.refreshRuntime();
 		}).catch(e => {
 			this.sec = null;
@@ -145,6 +148,10 @@ return view.extend({
 				E('div', { 'class': 'mh-chips' }, sec.other.map(o => E('span', { 'class': 'mh-chip' }, [ E('b', {}, o.name), ' ' + (o.type || '?') ])))
 			])
 			: '');
+		// 单个节点（proxies）：与订阅同为节点来源，放在同一页
+		const ns = this.nodeSec;
+		this.nodesBox.replaceChildren(!ns ? '' : ns.unsupported ? mui.card('单个节点', mui.empty('无法编辑节点：' + ns.reason))
+			: nodes.card({ sec: ns, rev: this.rev, apply: ops => this.apply(api.rpc.patch(ops, this.rev)) }));
 	},
 
 	renderBanner() {

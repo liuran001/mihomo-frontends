@@ -352,6 +352,81 @@ eq(F.home_path('../etc/passwd'), null, 'home_path 拒绝 ..');
 eq(F.home_path('/etc/passwd'), null, 'home_path 拒绝 HOME 之外');
 eq([F.rule_uses('AND,((RULE-SET,A),(NETWORK,UDP)),X', 'A'), F.rule_uses('RULE-SET,AB,X', 'A'), F.rule_uses('RULE-SET, A ,X', 'A')], [true, false, true], 'rule_uses');
 
+/* ---------- 单个节点 ---------- */
+
+let sp = s.proxies;
+eq(map(sp.list, (n) => [n.name, n.lock != null]), [['DNS_Hijack', true], ['TS-Server', true]], '节点列表：DNS 出站与 Tailscale 只读');
+eq(map(filter(sp.groups, (g) => !g.editable || g.auto), (g) => g.name), ['dns', '香港', '全部节点', '自动选择'], '经锚点继承的组不能直接改成员');
+
+let HK = { name: '🇭🇰 HK 01', type: 'trojan', server: 'hk.example', port: 443, password: 'pw', sni: 's.example', udp: true };
+let VL = { name: 'US/1', type: 'vless', server: 'us.example', port: '8443', uuid: 'u-1', tls: true, network: 'ws', 'ws-opts': { path: '/v', headers: { Host: 'cdn.example' } } };
+r = run([{ op: 'proxy.add', nodes: [HK, VL], groups: ['节点选择', '单独'] }]);
+x = X();
+eq([r.error, length(x.proxies), x.proxies[2].name, x.proxies[3].port, x.proxies[3]['ws-opts'].headers.Host], [null, 4, '🇭🇰 HK 01', 8443, 'cdn.example'], 'proxy.add 批量添加');
+eq([slice(x['proxy-groups'][0].proxies, -2), x['proxy-groups'][5].proxies], [['🇭🇰 HK 01', 'US/1'], ['🇭🇰 HK 01', 'US/1']], '加入已有 proxies 的组；没有 proxies 的组新建列表');
+ok(valid(), 'proxy.add 后 -t 通过');
+eq(F.sections(['proxies']).ok, true, '读取节点区段');
+
+let add1 = (n, g) => run([{ op: 'proxy.add', nodes: [n], groups: g }]);
+ok(index(add1({ ...HK, name: '节点选择' }).error ?? '', '已被占用') >= 0, '名称不能与策略组重名');
+ok(add1({ ...HK, name: 'a,b' }).error, '名称不能含英文逗号');
+ok(add1({ ...HK, type: 'snell' }).error, '拒绝不支持的类型');
+ok(add1({ ...HK, port: 70000 }).error, '拒绝无效端口');
+ok(add1({ ...HK, server: 'a b' }).error, '拒绝无效服务器');
+ok(add1({ ...HK, '<<': { x: 1 } }).error, '拒绝合并键');
+ok(add1({ ...HK, extra: { a: { b: { c: { d: 1 } } } } }).error, '拒绝过深的嵌套');
+ok(add1(HK, ['香港']).error, '不能改经锚点继承的组');
+ok(add1(HK, ['不存在']).error, '拒绝不存在的组');
+let auto = 'proxies:
+  - {name: a, type: socks5, server: 1.1.1.1, port: 1}
+proxy-groups:
+  - {name: all, type: select, include-all-proxies: true}
+rules:
+  - MATCH,all
+';
+r = run([{ op: 'proxy.add', nodes: [HK], groups: ['all'] }], auto);
+eq([r.error, X()['proxy-groups'][0].proxies], [null, null], '自动包含全部节点的组不改');
+ok(run([{ op: 'proxy.add', nodes: [HK, HK] }]).error, '同一批次不能重名');
+
+// 编辑与改名：策略组成员、规则出站、前置代理、规则集的 proxy 一起改
+let base = run([{ op: 'proxy.add', nodes: [HK, { ...VL, 'dialer-proxy': '🇭🇰 HK 01' }], groups: ['节点选择'] },
+	{ op: 'rules.set', items: [{ v: 'DOMAIN,hk.test,🇭🇰 HK 01' }, { v: 'DOMAIN,ip.test,🇭🇰 HK 01,no-resolve' }, ...map(s.rules.list, (v, i) => ({ k: i }))] },
+	{ op: 'rule_provider.set', name: 'CN-IP', data: { proxy: '🇭🇰 HK 01' } }]);
+ok(!base.error, '准备改名用例', base.error);
+let withHK = fs.readfile(tmp);
+r = F.apply_ops(tmp, [{ op: 'proxy.set', name: '🇭🇰 HK 01', data: { ...HK, name: '香港 01', port: 8443 }, groups: ['节点选择'] }]);
+x = X();
+eq([r.error, x.proxies[2].name, x.proxies[2].port, x.proxies[3]['dialer-proxy'], slice(x.rules, 0, 2), x['rule-providers']['CN-IP'].proxy, x['proxy-groups'][0].proxies[5]],
+	[null, '香港 01', 8443, '香港 01', ['DOMAIN,hk.test,香港 01', 'DOMAIN,ip.test,香港 01,no-resolve'], '香港 01', '香港 01'], 'proxy.set 改名同步引用');
+ok(valid(), '改名后 -t 通过');
+ok(index(fs.readfile(tmp), '# Tailscale 在最前') >= 0, '改名保留规则注释');
+
+U.write_file(tmp, withHK);
+r = F.apply_ops(tmp, [{ op: 'proxy.set', name: 'US/1', data: { ...VL, 'dialer-proxy': '🇭🇰 HK 01' }, groups: ['单独'] }]);
+x = X();
+eq([r.error, index(x['proxy-groups'][0].proxies, 'US/1'), x['proxy-groups'][5].proxies], [null, -1, ['US/1']], 'proxy.set 按勾选调整策略组');
+U.write_file(tmp, withHK);
+ok(F.apply_ops(tmp, [{ op: 'proxy.set', name: 'US/1', data: { ...VL, name: 'TS-Server' } }]).error, '改名不能与已有名称冲突');
+ok(F.apply_ops(tmp, [{ op: 'proxy.set', name: 'TS-Server', data: HK }]).error, 'Tailscale 出站不能用节点表单编辑');
+ok(F.apply_ops(tmp, [{ op: 'proxy.set', name: 'Nope', data: HK }]).error, '拒绝不存在的节点');
+U.write_file(tmp, withHK);
+r = F.apply_ops(tmp, [{ op: 'proxy.set', name: 'US/1', data: { ...VL, 'dialer-proxy': '🇭🇰 HK 01' }, groups: ['节点选择'] }]);
+eq([r.error, fs.readfile(tmp)], [null, withHK], '未改动时文件不变');
+
+// 删除：仍被引用时拒绝并说明位置；从策略组移除
+U.write_file(tmp, withHK);
+r = F.apply_ops(tmp, [{ op: 'proxy.delete', name: '🇭🇰 HK 01' }]);
+ok(r.error && index(r.error, '规则第 1 条') >= 0 && index(r.error, '节点 US/1 的前置代理') >= 0 && index(r.error, '规则集 CN-IP') >= 0, '被引用的节点不能删除', r.error);
+r = F.apply_ops(tmp, [{ op: 'proxy.delete', name: 'US/1' }]);
+x = X();
+eq([r.error, length(x.proxies), index(x['proxy-groups'][0].proxies, 'US/1')], [null, 3, -1], 'proxy.delete 同时移出策略组');
+ok(valid(), 'proxy.delete 后 -t 通过');
+r = run([{ op: 'proxy.add', nodes: [HK], groups: ['单独'] }, { op: 'proxy.delete', name: '🇭🇰 HK 01' }]);
+eq([r.error, X()['proxy-groups'][5].proxies], [null, null], '组还有订阅时可以删掉唯一的节点');
+ok(run([{ op: 'proxy.delete', name: 'DNS_Hijack' }]).error, '内置 DNS 出站不能删除');
+let only = 'proxies:\n  - {name: a, type: socks5, server: 1.1.1.1, port: 1}\nproxy-groups:\n  - {name: g, type: select, proxies: [a]}\nrules:\n  - MATCH,g\n';
+ok(index(run([{ op: 'proxy.delete', name: 'a' }], only).error ?? '', '只包含') >= 0, '不能删掉组里唯一的出站');
+
 fs.unlink(tmp);
 fs.unlink(P.RUN_DIR + '/orig.yaml');
 eq(length(filter(fs.lsdir(P.RUN_DIR), (n) => match(n, /^(forms|edit|ops)-/))), 0, '不留临时文件');

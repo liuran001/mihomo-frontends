@@ -10,7 +10,7 @@ import * as U from 'mihomo.util';
 import * as Y from 'mihomo.yaml';
 import * as C from 'mihomo.check';
 
-const NAMES = ['providers', 'groups', 'ebpf', 'rules', 'rule_providers', 'basic', 'dns', 'tailscale'];
+const NAMES = ['providers', 'proxies', 'groups', 'ebpf', 'rules', 'rule_providers', 'basic', 'dns', 'tailscale'];
 const BUILTIN_POLICIES = ['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'COMPATIBLE'];
 const DEFAULT_HC = { enable: true, url: 'https://cp.cloudflare.com', interval: 300, timeout: 5000 };
 const MAX_RULES = 5000;
@@ -602,8 +602,74 @@ function sec_tailscale(ctx) {
 	return out;
 }
 
+/* ---------- 区段：proxies（单个节点） ---------- */
+
+// 表单支持的类型（与 shared/proxylink.js 的 PROTOCOLS 一致）；其他类型只列出、可删除
+const NODE_TYPES = ['ss', 'ssr', 'vmess', 'vless', 'trojan', 'hysteria', 'hysteria2', 'tuic', 'anytls', 'socks5', 'http', 'wireguard'];
+const MAX_NODES = 256;
+
+// 节点名称：可含空格、emoji 与 /，但不能含英文逗号（会破坏规则）与控制字符
+function node_name(v) {
+	if (type(v) != 'string' || v == '' || v != trim(v) || length(v) > 128 || index(v, ',') >= 0)
+		return null;
+	return (C.text(v, 128) == v) ? v : null;
+}
+
+// 节点不能编辑的原因；null 表示可以
+function node_lock(p, raw) {
+	p = obj(p);
+	if (p.type == 'tailscale')
+		return 'Tailscale 出站请在 Tailscale 页管理';
+	if (p.type == 'dns')
+		return '内置的 DNS 出站，用于接管 53 端口';
+	if (has(obj(raw).keys, '<<'))
+		return '使用了锚点合并（<<），请在配置文件页编辑';
+	if (!has(NODE_TYPES, p.type))
+		return '表单暂不支持 ' + (p.type ?? '?') + ' 类型，请在配置文件页编辑';
+	return null;
+}
+
+// 策略组与节点成员：auto 为 include-all / include-all-proxies 自动包含全部节点；
+// editable 为能否直接改它的 proxies 列表（经锚点合并继承的不能）
+function node_groups(ctx) {
+	let raws = arr(ctx.raw.groups), out = [];
+	for (let i, g in arr(ctx.x['proxy-groups'])) {
+		g = obj(g);
+		let keys_ = obj(raws[i]).keys ?? [];
+		push(out, {
+			index: i, name: g.name, type: g.type,
+			auto: g['include-all'] === true || g['include-all-proxies'] === true,
+			editable: has(keys_, 'proxies') || !has(keys_, '<<'),
+			explicit: has(keys_, 'proxies'),
+			members: arr(g.proxies),
+			others: length(arr(g.use)) > 0 || g['include-all'] === true || g['include-all-proxies'] === true || g['include-all-providers'] === true
+		});
+	}
+	return out;
+}
+
+function sec_proxies(ctx) {
+	let px = ctx.x.proxies;
+	if (px != null && type(px) != 'array')
+		return { unsupported: true, reason: 'proxies 不是列表' };
+	let groups = node_groups(ctx), raws = arr(ctx.raw.proxies), list = [];
+	for (let i, p in arr(px)) {
+		p = obj(p);
+		let lock = node_lock(p, raws[i]);
+		let v = { name: p.name, type: p.type ?? '', server: p.server ?? '', port: p.port, lock: lock,
+			groups: map(filter(groups, (g) => has(g.members, p.name)), (g) => g.name) };
+		if (!lock)
+			v.data = p;
+		push(list, v);
+	}
+	return {
+		list: list, types: NODE_TYPES, policies: policies(ctx.x),
+		groups: map(groups, (g) => ({ name: g.name, type: g.type, auto: g.auto, editable: g.editable }))
+	};
+}
+
 const SECTIONS = {
-	providers: sec_providers, groups: sec_groups, ebpf: sec_ebpf, rules: sec_rules,
+	providers: sec_providers, proxies: sec_proxies, groups: sec_groups, ebpf: sec_ebpf, rules: sec_rules,
 	rule_providers: sec_rule_providers, basic: sec_basic, dns: sec_dns, tailscale: sec_tailscale
 };
 
@@ -1374,6 +1440,311 @@ function op_tailscale_delete(op, ctx) {
 	return { edits: edits };
 }
 
+/* 单个节点 */
+
+const NODE_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
+
+// 节点字段的通用校验：键名、字符串长度、列表与嵌套深度有上限；协议细节由保存前的 mihomo -t 校验
+function node_value(v, depth) {
+	let t = type(v);
+	if (t == 'string')
+		return (C.text(v, 4096) != null) ? v : null;
+	if (t == 'int' || t == 'double' || t == 'bool')
+		return v;
+	if (depth >= 4)
+		return null;
+	if (t == 'array') {
+		if (length(v) > 64)
+			return null;
+		let out = [];
+		for (let e in v) {
+			let c = node_value(e, depth + 1);
+			if (c == null)
+				return null;
+			push(out, c);
+		}
+		return out;
+	}
+	if (t == 'object') {
+		if (length(keys(v)) > 64)
+			return null;
+		let out = {};
+		for (let k, e in v) {
+			if (!match(k, NODE_KEY) || k == '<<')
+				return null;
+			let c = node_value(e, depth + 1);
+			if (c == null)
+				return null;
+			out[k] = c;
+		}
+		return out;
+	}
+	return null;
+}
+
+function check_node(n) {
+	if (type(n) != 'object')
+		return fail('节点无效');
+	let name = node_name(n.name);
+	if (name == null)
+		return fail('节点名称无效：不能为空、首尾不能有空格、不能包含英文逗号，最长 128 个字符');
+	if (!has(NODE_TYPES, n.type))
+		return fail('节点「' + name + '」的类型不支持：' + (n.type ?? ''));
+	let server = C.text(n.server, 255);
+	if (server == null || match(server, /[ \t]/))
+		return fail('节点「' + name + '」的服务器地址无效');
+	if (C.port(n.port) == null)
+		return fail('节点「' + name + '」的端口无效');
+	let v = node_value(n, 0);
+	if (v == null)
+		return fail('节点「' + name + '」包含无效的字段');
+	v.port = C.port(n.port);
+	// 名称与类型放在最前面，便于阅读
+	let out = { name: name, type: n.type };
+	for (let k, e in v)
+		if (k != 'name' && k != 'type')
+			out[k] = e;
+	return { node: out };
+}
+
+function node_index(x, name) {
+	for (let i, p in arr(x.proxies))
+		if (obj(p).name == name)
+			return i;
+	return -1;
+}
+
+// 被占用的名称：节点、策略组、内置策略与订阅
+function taken_names(x) {
+	return [...policies(x), ...keys(obj(x['proxy-providers']))];
+}
+
+// DNS 服务器以 地址#出站名 指定经哪个出站查询
+function dns_hit(v, name) {
+	if (type(v) == 'string')
+		return substr(v, -length(name) - 1) == '#' + name;
+	if (type(v) == 'array')
+		return length(filter(v, (e) => dns_hit(e, name))) > 0;
+	if (type(v) == 'object')
+		return length(filter(values(v), (e) => dns_hit(e, name))) > 0;
+	return false;
+}
+
+// 指向 name 的引用（中文说明）：规则出站、前置代理、规则集/订阅的 proxy、DNS 服务器的 #name
+function policy_refs(x, name) {
+	let refs = [];
+	for (let i, r in arr(x.rules))
+		if (type(r) == 'string' && rule_target(r) == name)
+			push(refs, '规则第 ' + (i + 1) + ' 条');
+	for (let p in arr(x.proxies))
+		if (obj(p)['dialer-proxy'] == name)
+			push(refs, '节点 ' + p.name + ' 的前置代理');
+	for (let g in arr(x['proxy-groups']))
+		if (obj(g)['dialer-proxy'] == name)
+			push(refs, '策略组 ' + g.name + ' 的前置代理');
+	for (let n, e in obj(x['rule-providers']))
+		if (obj(e).proxy == name)
+			push(refs, '规则集 ' + n + ' 的下载方式');
+	for (let n, e in obj(x['proxy-providers']))
+		if (obj(e).proxy == name || obj(obj(e).override)['dialer-proxy'] == name)
+			push(refs, '订阅 ' + n);
+	if (dns_hit(x.dns, name))
+		push(refs, 'DNS 服务器');
+	return refs;
+}
+
+// 规则字符串的出站改名（AND/OR 等逻辑规则的出站同样是最后一段）
+function rule_retarget(rule, nw) {
+	let parts = map(split(rule, ','), (s) => trim(s)), i = length(parts) - 1;
+	while (i > 1 && match(lc(parts[i]), /^(no-resolve|src)$/))
+		i--;
+	parts[i] = nw;
+	return join(',', parts);
+}
+
+// 改名：同步策略组成员、规则出站、前置代理、规则集与订阅的 proxy
+function rename_edits(ctx, old, nw) {
+	let x = ctx.x, edits = [];
+	for (let l in proxies_lists(ctx))
+		for (let j, n in l.names)
+			if (n == old)
+				push(edits, { t: 'set', p: [...l.path, j], v: nw });
+	let rules = arr(x.rules), items = [], changed = false;
+	for (let i, r in rules) {
+		if (type(r) == 'string' && rule_target(r) == old) {
+			push(items, { v: rule_retarget(r, nw) });
+			changed = true;
+		} else
+			push(items, { k: i });
+	}
+	if (changed)
+		push(edits, { t: 'list', p: ['rules'], v: items });
+	let raws = arr(ctx.raw.proxies);
+	for (let i, p in arr(x.proxies))
+		if (obj(p)['dialer-proxy'] == old) {
+			let r = map_edits(['proxies', i], p, obj(raws[i]).keys ?? [], { 'dialer-proxy': nw });
+			if (r.error)
+				return r;
+			push(edits, ...r.edits);
+		}
+	for (let i, g in arr(x['proxy-groups']))
+		if (obj(g)['dialer-proxy'] == old) {
+			let r = map_edits(['proxy-groups', i], g, obj(arr(ctx.raw.groups)[i]).keys ?? [], { 'dialer-proxy': nw });
+			if (r.error)
+				return r;
+			push(edits, ...r.edits);
+		}
+	for (let n, e in obj(x['rule-providers']))
+		if (obj(e).proxy == old) {
+			let r = map_edits(['rule-providers', n], e, obj(ctx.raw.rp)[n] ?? [], { proxy: nw });
+			if (r.error)
+				return r;
+			push(edits, ...r.edits);
+		}
+	for (let n, e in obj(x['proxy-providers']))
+		if (obj(e).proxy == old) {
+			let r = map_edits(['proxy-providers', n], e, obj(obj(ctx.raw.pp)[n]).keys ?? [], { proxy: nw });
+			if (r.error)
+				return r;
+			push(edits, ...r.edits);
+		}
+	return { edits: edits };
+}
+
+// 按勾选的策略组调整成员：groups 为希望包含 name 的策略组名；自动包含全部节点的组不改。
+// 加入时追加到 proxies 末尾（组里还没有 proxies 时新建）；移出时组里不能因此没有任何出站
+function membership_edits(ctx, name, groups, current_name) {
+	if (type(groups) != 'array')
+		return { edits: [] };
+	let all = node_groups(ctx), edits = [];
+	for (let g in groups)
+		if (type(g) != 'string' || !length(filter(all, (e) => e.name == g)))
+			return fail('策略组不存在：' + g);
+	for (let g in all) {
+		if (g.auto)
+			continue;
+		let want = has(groups, g.name), cur = current_name != null && has(g.members, current_name);
+		if (want == cur)
+			continue;
+		if (!g.editable)
+			return fail('策略组「' + g.name + '」的成员继承自锚点，请在配置文件页编辑');
+		if (want) {
+			push(edits, g.explicit ? { t: 'append', p: ['proxy-groups', g.index, 'proxies'], v: name }
+				: { t: 'set', p: ['proxy-groups', g.index, 'proxies'], v: [name] });
+			g.explicit = true;
+		} else {
+			let left = filter(g.members, (n) => n != current_name);
+			if (!length(left) && !g.others)
+				return fail('策略组「' + g.name + '」只剩这个节点，移出后没有可用出站');
+			if (!length(left))
+				push(edits, { t: 'del', p: ['proxy-groups', g.index, 'proxies'] });
+			else
+				for (let j = length(g.members) - 1; j >= 0; j--)
+					if (g.members[j] == current_name)
+						push(edits, { t: 'del', p: ['proxy-groups', g.index, 'proxies', j] });
+		}
+	}
+	return { edits: edits };
+}
+
+function op_proxy_add(op, ctx) {
+	let x = ctx.x;
+	if (x.proxies != null && type(x.proxies) != 'array')
+		return fail('proxies 不是列表，请在配置文件页编辑');
+	let nodes = op.nodes;
+	if (type(nodes) != 'array' || !length(nodes) || length(nodes) > MAX_NODES)
+		return fail('一次添加 1–' + MAX_NODES + ' 个节点');
+	if (length(arr(x.proxies)) + length(nodes) > 4096)
+		return fail('节点过多');
+	let taken = taken_names(x), add = [];
+	for (let n in nodes) {
+		let r = check_node(n);
+		if (r.error)
+			return r;
+		if (has(taken, r.node.name))
+			return fail('名称已被占用：' + r.node.name);
+		push(taken, r.node.name);
+		push(add, r.node);
+	}
+	let edits = (type(x.proxies) == 'array') ? map(add, (n) => ({ t: 'append', p: ['proxies'], v: n }))
+		: [{ t: 'set', p: ['proxies'], v: add }];
+	if (op.groups != null) {
+		if (type(op.groups) != 'array')
+			return fail('策略组列表无效');
+		let m = membership_edits(ctx, add[0].name, op.groups, null);
+		if (m.error)
+			return m;
+		for (let e in m.edits) {
+			if (e.t == 'set')
+				push(edits, { t: 'set', p: e.p, v: map(add, (n) => n.name) });
+			else
+				for (let n in add)
+					push(edits, { t: 'append', p: e.p, v: n.name });
+		}
+	}
+	return { edits: edits };
+}
+
+function op_proxy_set(op, ctx) {
+	let x = ctx.x, i = node_index(x, op.name);
+	if (type(op.name) != 'string' || i < 0)
+		return fail('节点不存在：' + (op.name ?? ''));
+	let lock = node_lock(x.proxies[i], arr(ctx.raw.proxies)[i]);
+	if (lock)
+		return fail(lock);
+	let r = check_node(op.data);
+	if (r.error)
+		return r;
+	let node = r.node, edits = [];
+	if (node.name != op.name) {
+		if (has(taken_names(x), node.name))
+			return fail('名称已被占用：' + node.name);
+		let rn = rename_edits(ctx, op.name, node.name);
+		if (rn.error)
+			return rn;
+		push(edits, ...rn.edits);
+	}
+	if (!same(x.proxies[i], node))
+		unshift(edits, { t: 'set', p: ['proxies', i], v: node });
+	let m = membership_edits(ctx, node.name, op.groups, op.name);
+	if (m.error)
+		return m;
+	push(edits, ...m.edits);
+	return { edits: edits };
+}
+
+function op_proxy_delete(op, ctx) {
+	let x = ctx.x, i = node_index(x, op.name);
+	if (type(op.name) != 'string' || i < 0)
+		return fail('节点不存在：' + (op.name ?? ''));
+	let p = obj(x.proxies[i]);
+	if (p.type == 'tailscale' || p.type == 'dns')
+		return fail(node_lock(p, null));
+	let refs = policy_refs(x, op.name);
+	if (length(refs))
+		return fail('节点「' + op.name + '」正在被使用：' + join('、', refs) + '。请先改成别的出站');
+	let edits = [{ t: 'del', p: ['proxies', i] }];
+	let groups = node_groups(ctx);
+	for (let l in proxies_lists(ctx)) {
+		let hits = [];
+		for (let j = length(l.names) - 1; j >= 0; j--)
+			if (l.names[j] == op.name)
+				push(hits, j);
+		if (!length(hits))
+			continue;
+		if (length(hits) == length(l.names)) {
+			let g = filter(groups, (e) => same(['proxy-groups', e.index, 'proxies'], l.path) && e.others);
+			if (!length(g))
+				return fail('有策略组只包含「' + op.name + '」，请先给它换一个出站');
+			push(edits, { t: 'del', p: l.path });
+			continue;
+		}
+		for (let j in hits)
+			push(edits, { t: 'del', p: [...l.path, j] });
+	}
+	return { edits: edits };
+}
+
 const OPS = {
 	'mode.set': op_mode_set,
 	'provider.set': op_provider_set,
@@ -1391,7 +1762,10 @@ const OPS = {
 	'dns.set': op_dns_set,
 	'tailscale.set': op_tailscale_set,
 	'tailscale.add': op_tailscale_add,
-	'tailscale.delete': op_tailscale_delete
+	'tailscale.delete': op_tailscale_delete,
+	'proxy.add': op_proxy_add,
+	'proxy.set': op_proxy_set,
+	'proxy.delete': op_proxy_delete
 };
 
 function run_pre(list) {

@@ -5,6 +5,8 @@ Thumbs.db
 
 # 模板由 scripts/sync-template.sh 从 shared/ 生成
 luci/root/usr/share/mihomo-luci/template.yaml
+luci/root/www/luci-static/resources/mihomo/proxylink.js
+luci/tests/preview/.cache/
 magisk/webroot/template.yaml
 screen.png
 

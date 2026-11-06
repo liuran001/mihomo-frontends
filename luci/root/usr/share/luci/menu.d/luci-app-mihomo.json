@@ -24,7 +24,7 @@
 		"depends": { "acl": [ "luci-app-mihomo" ] }
 	},
 	"admin/services/mihomo/providers": {
-		"title": "订阅",
+		"title": "订阅与节点",
 		"order": 40,
 		"action": { "type": "view", "path": "mihomo/providers" },
 		"depends": { "acl": [ "luci-app-mihomo" ] }

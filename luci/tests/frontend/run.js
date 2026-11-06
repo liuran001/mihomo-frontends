@@ -4,6 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { ROOT, source } = require('./harness');
 
+// shared/ 下的共用文件先同步成 LuCI 模块（生成的文件不入库）
+require('child_process').execFileSync('sh', [path.join(__dirname, '../../scripts/sync-template.sh')], { stdio: 'inherit' });
+
 function walk(dir) {
 	return fs.readdirSync(dir, { withFileTypes: true }).flatMap(d =>
 		d.isDirectory() ? walk(path.join(dir, d.name)) : [path.join(dir, d.name)]);

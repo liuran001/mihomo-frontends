@@ -34,7 +34,7 @@ jobs:
         run: go vet ./... && go test ./...
       - name: Magisk 回归测试
         run: |
-          node --test magisk/tests/frontend.test.js magisk/tests/bridge.test.js magisk/tests/onboarding.test.js magisk/tests/config.test.js magisk/tests/login.test.js magisk/tests/screen.test.js
+          node --test magisk/tests/frontend.test.js magisk/tests/bridge.test.js magisk/tests/onboarding.test.js magisk/tests/config.test.js magisk/tests/login.test.js magisk/tests/screen.test.js magisk/tests/proxylink.test.js
           sh magisk/tests/core.test.sh
           sh magisk/tests/backend.sh
           sh magisk/tests/backend-process.sh
