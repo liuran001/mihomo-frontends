@@ -509,7 +509,7 @@ fun LogsPage(onBack: () -> Unit) {
                 (query.isBlank() || entry.message.contains(query.trim(), ignoreCase = true))
         }
     }
-    Page(title = "日志", subtitle = "最近 300 行，最新的在上", navigationIcon = { BackIcon(onBack) }, actions = {
+    Page(title = "日志", subtitle = "最近 300 行，最新的在上", fullWidth = true, navigationIcon = { BackIcon(onBack) }, actions = {
         BarAction(MiuixIcons.Regular.Report, "诊断信息", enabled = toolsIdle) { state.collect() }
         BarAction(MiuixIcons.Regular.Refresh, "刷新", enabled = toolsIdle) { state.refresh() }
     }) {

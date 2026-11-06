@@ -77,7 +77,7 @@ fun ProxiesPage(onBack: (() -> Unit)?) {
     val columns = (LocalPageWidth.current.value / 235).toInt().coerceIn(2, 5)
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(Unit) { if (state.stale) liveRead("读取代理组中…") { state.load() } }
-    Page(title = "代理", navigationIcon = { if (onBack != null) BackIcon(onBack) }, actions = {
+    Page(title = "代理", fullWidth = true, navigationIcon = { if (onBack != null) BackIcon(onBack) }, actions = {
         BarAction(MiuixIcons.Regular.Refresh, "刷新", enabled = liveIdle) { state.refresh() }
     }) {
         banner(if (!liveIdle) liveActivity else "", BannerKind.Progress, "activity")
@@ -302,6 +302,7 @@ fun ConnectionsPage(onBack: () -> Unit) {
     }
     Page(
         title = "连接",
+        fullWidth = true,
         subtitle = state.total?.let { "共 $it 个 · 上传 ${formatBytes(state.upload)} 下载 ${formatBytes(state.download)}" } ?: "",
         navigationIcon = { BackIcon(onBack) },
         actions = {

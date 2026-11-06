@@ -89,11 +89,14 @@ fun Page(
     listState: LazyListState = rememberLazyListState(),
     bottomPadding: Dp = 0.dp,
     header: (@Composable () -> Unit)? = null,
+    /** 表格、网格类页面用满桌面宽度；设置类列表最宽 960dp，避免一行拉得太长难以阅读。 */
+    fullWidth: Boolean = false,
     content: LazyListScope.() -> Unit,
 ) {
     val behavior = MiuixScrollBehavior()
+    val width = if (fullWidth) LocalPageWidth.current else LocalPageWidth.current.coerceAtMost(960.dp)
     Column(modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.widthIn(max = LocalPageWidth.current).fillMaxWidth()) {
+        Box(Modifier.widthIn(max = width).fillMaxWidth()) {
         TopAppBar(
             title = title,
             subtitle = subtitle,
@@ -108,7 +111,7 @@ fun Page(
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.widthIn(max = LocalPageWidth.current).fillMaxSize()
+                modifier = Modifier.widthIn(max = width).fillMaxSize()
                     .overScrollVertical()
                     .nestedScroll(behavior.nestedScrollConnection),
                 contentPadding = PaddingValues(bottom = 24.dp + bottomPadding),
