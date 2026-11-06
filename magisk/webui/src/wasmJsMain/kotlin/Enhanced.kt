@@ -175,8 +175,10 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         }
         group("终端", "terminal") {
             Caption("以 root 执行命令；每次执行独立，最长 60 秒。不要在这里启动常驻服务。", Tone.warning)
-            InputField("命令", command, singleLine = false, minLines = 3, maxLines = 8, enabled = idle) { command = it }
-            InputField("超时（秒）", timeout, enabled = idle) { timeout = it }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                InputField("命令", command, singleLine = false, minLines = 3, maxLines = 8, enabled = idle) { command = it }
+                InputField("超时（秒）", timeout, enabled = idle) { timeout = it }
+            }
             ButtonRow {
                 ActionButton("执行命令", primary = true, enabled = idle && command.isNotBlank()) {
                     if (timeout.toIntOrNull() !in 1..60) error = "超时须为 1–60 秒" else confirmTerminal = true
