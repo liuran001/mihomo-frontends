@@ -41,13 +41,16 @@ function valid_version(v) {
 	return type(v) == 'string' && match(v, VERSION_RE) != null;
 }
 
-// sha256sum 格式：<64 位十六进制>  [*]<文件名>；同名取第一条
+// sha256sum 格式：<64 位十六进制>  [*]<文件名>；兼容 ./ 前缀，规范化后同名取第一条
 function parse_checksums(text) {
 	let res = {};
 	for (let line in split(text ?? '', '\n')) {
 		let m = match(trim(line), SUM_RE);
-		if (m && res[m[2]] == null)
-			res[m[2]] = lc(m[1]);
+		if (!m)
+			continue;
+		let name = replace(m[2], /^(\.\/)+/, '');
+		if (res[name] == null)
+			res[name] = lc(m[1]);
 	}
 	return res;
 }

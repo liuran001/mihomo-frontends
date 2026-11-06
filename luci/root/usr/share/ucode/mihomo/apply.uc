@@ -242,6 +242,11 @@ function begin(kind, args) {
 	let id = U.rand_hex(8);
 	if (!lock_acquire(id))
 		return { ok: false, error: ERR_BUSY };
+	// 首次安装时可能还没有配置目录，模板、文件和 URL 导入都需先创建它。
+	if (index(['raw', 'patch', 'restore', 'setup'], kind) >= 0 && !U.mkdir_p(P.HOME)) {
+		lock_release();
+		return { ok: false, error: '无法创建配置目录：' + P.HOME };
+	}
 	let r = prepare(kind, args ?? {});
 	if (r.error) {
 		fs.unlink(P.CANDIDATE);
