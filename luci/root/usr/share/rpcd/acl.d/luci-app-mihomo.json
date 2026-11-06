@@ -8,7 +8,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.mihomo": [ "validate", "substore_set", "substore_install", "substore_service", "yaml_check", "save_raw", "patch", "tailscale_logout", "provider_toggle", "migrate_include_all", "backup_restore", "backup_delete", "service", "rule_test", "core_check", "core_update", "core_rollback", "core_settings", "setup_apply" ]
+				"luci.mihomo": [ "validate", "substore_set", "substore_install", "substore_service", "yaml_check", "save_raw", "patch", "tailscale_logout", "provider_toggle", "migrate_include_all", "backup_restore", "backup_delete", "service", "rule_test", "core_check", "core_update", "core_rollback", "core_settings", "setup_fetch", "setup_adapt", "setup_apply" ]
 			}
 		}
 	}

@@ -376,6 +376,18 @@ function rpc(method, args, opts) {
 			: Object.assign({}, snap.setup_status, { autostart: true, running: true, lan_default: [ 'br-lan' ] });
 	case 'setup_render':
 		return { ok: true, content: snap.config_read.content };
+	case 'setup_fetch':
+		if (/sub|token/i.test(String((args && args.url) || '')))
+			return { ok: true, kind: 'subscription', message: '这是 base64 编码的节点订阅，不是 mihomo 配置' };
+		return { ok: true, kind: 'config', summary: { proxies: 24, providers: 0, groups: 9, rules: 312 }, content: snap.config_read.content };
+	case 'setup_adapt':
+		return { ok: true, content: snap.config_read.content, changes: [
+			{ id: 'ebpf', title: 'eBPF 透明代理（下联 br-lan）', detail: '新增 ebpf-in 入站：本机 cgroup + 局域网 packet_rewrite，国内 IP 绕过', optional: false, applied: true },
+			{ id: 'dns', title: 'DNS', detail: '开启 DNS 并监听 0.0.0.0:1053，redir-host 模式', optional: false, applied: true },
+			{ id: 'listeners', title: '移除冲突的入站', detail: 'tproxy-in（tproxy）', optional: true, applied: !(args && (args.skip || []).includes('listeners')) },
+			{ id: 'ports', title: '移除透明代理端口', detail: 'tproxy-port、redir-port', optional: true, applied: !(args && (args.skip || []).includes('ports')) },
+			{ id: 'secret', title: '面板密钥', detail: '随机生成', optional: true, applied: !(args && (args.skip || []).includes('secret')) }
+		] };
 	}
 	return null;
 }

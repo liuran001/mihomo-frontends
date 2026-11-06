@@ -64,6 +64,24 @@ assert.deepStrictEqual(su.buildArgs({ ...st, source: 'url' }, null),
 assert.deepStrictEqual(su.buildArgs({ ...st, source: 'import', adapt: false, start: false }, 'r2'),
 	{ source: 'import', content: 'x: 1', adapt: false, lan: [], start: false, rev: 'r2' });
 
+// 跳过可选项；链接内容已读取时按导入写入同一份内容
+assert.deepStrictEqual(su.buildArgs({ ...st, source: 'import', skip: [ 'secret' ] }, 'r3'),
+	{ source: 'import', content: 'x: 1', adapt: true, lan: [ 'br-lan' ], skip: [ 'secret' ], start: true, rev: 'r3' });
+assert.strictEqual(su.buildArgs({ ...st, source: 'import', adapt: false, skip: [ 'secret' ] }, '').skip, undefined, '不补全时不带跳过项');
+assert.deepStrictEqual(su.buildArgs({ ...st, source: 'url', fetched: { content: 'y: 2' } }, ''),
+	{ source: 'import', content: 'y: 2', adapt: true, lan: [ 'br-lan' ], start: true, rev: '' });
+
+/* 下载内容概况、订阅转模板、跳过项 */
+assert.strictEqual(su.summaryText({ proxies: 12, providers: 2, groups: 8, rules: 120 }), '12 个节点 · 2 个订阅 · 8 个策略组 · 120 条规则');
+assert.strictEqual(su.summaryText({ proxies: 0, providers: 1, groups: 0, rules: 3 }), '1 个订阅 · 3 条规则');
+assert.strictEqual(su.summaryText({ proxies: 0, providers: 0, groups: 0, rules: 0 }), '没有节点与规则');
+assert.deepStrictEqual(su.subFromUrl('https://u:p@sub.example.com:8443/api?t=1', ' clash '), { name: 'sub.example.com', url: 'https://u:p@sub.example.com:8443/api?t=1', ua: 'clash' });
+assert.deepStrictEqual(su.subFromUrl('https://a.example/s', ''), { name: 'a.example', url: 'https://a.example/s' });
+assert.strictEqual(su.validateSubs([ su.subFromUrl('https://a.example/s') ]).ok, true, '预填的订阅行能通过校验');
+const CH = [ { id: 'ebpf', optional: false }, { id: 'secret', optional: true }, { id: 'ports', optional: true } ];
+assert.deepStrictEqual(su.keepSkip([ 'secret', 'ebpf', 'gone' ], CH), [ 'secret' ]);
+assert.deepStrictEqual(su.keepSkip(null, CH), []);
+
 /* 向导停在哪一步 */
 assert.strictEqual(su.firstStep({ ok: true, core: false, config: false }), 0);
 assert.strictEqual(su.firstStep({ ok: true, core: true, config: false }), 1);

@@ -12,7 +12,8 @@ function declare(method, params) {
 	return rpc.declare({ object: OBJECT, method: method, params: params || [] });
 }
 
-const SETUP_APPLY = ['source', 'subs', 'lan', 'secret', 'content', 'url', 'ua', 'adapt', 'start', 'rev'];
+const SETUP_APPLY = ['source', 'subs', 'lan', 'secret', 'content', 'url', 'ua', 'adapt', 'skip', 'start', 'rev'];
+const SETUP_ADAPT = ['content', 'lan', 'secret', 'skip'];
 const SETUP_RENDER = ['subs', 'lan', 'secret'];
 const CORE_SETTINGS = ['repo', 'tag', 'mirror'];
 
@@ -52,6 +53,8 @@ const rpcs = {
 	coreSettings: declare('core_settings', CORE_SETTINGS),
 	setupStatus: declare('setup_status'),
 	setupRender: declare('setup_render', SETUP_RENDER),
+	setupFetch: declare('setup_fetch', ['url', 'ua']),
+	setupAdapt: declare('setup_adapt', SETUP_ADAPT),
 	setupApply: declare('setup_apply', SETUP_APPLY)
 };
 
@@ -61,6 +64,7 @@ function named(method, params) {
 }
 const setupApply = named('setupApply', SETUP_APPLY);
 const setupRender = named('setupRender', SETUP_RENDER);
+const setupAdapt = named('setupAdapt', SETUP_ADAPT);
 const coreSettings = named('coreSettings', CORE_SETTINGS);
 
 const HTTPS_REASON = '当前以 https 打开 LuCI，浏览器会拦截到控制器的 http 连接；实时功能请改用 http 访问 LuCI，或为控制器配置 TLS';
@@ -269,7 +273,7 @@ function stream(path, onMessage, root) {
 return baseclass.extend({
 	rpc: rpcs,
 	baseUrl, withToken, dashboardUrl, controller, request, stream, poll, onState,
-	setupApply, setupRender, coreSettings,
+	setupApply, setupRender, setupAdapt, coreSettings,
 	// 面板链接 { url, reason }
 	dashboard: () => controller().then(c => dashboardUrl(c.raw, location.hostname)),
 	reason: () => current.reason,

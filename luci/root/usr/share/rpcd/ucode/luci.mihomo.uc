@@ -59,7 +59,9 @@ return {
 		core_settings:  { args: { repo: '', tag: '', mirror: '' }, call: wrap((a) => CORE.settings_set(a)) },
 		setup_status:   { call: wrap(() => SU.status()) },
 		setup_render:   { args: { subs: [], lan: [], secret: '' }, call: wrap((a) => SU.render(a)) },
-		setup_apply:    { args: { source: '', subs: [], lan: [], secret: '', content: '', url: '', ua: '', adapt: false, start: false, rev: '' },
+		setup_fetch:    { args: { url: '', ua: '' }, call: wrap((a) => SU.fetch_config(a)) },
+		setup_adapt:    { args: { content: '', lan: [], secret: '', skip: [] }, call: wrap((a) => SU.adapt_preview(a)) },
+		setup_apply:    { args: { source: '', subs: [], lan: [], secret: '', content: '', url: '', ua: '', adapt: false, skip: [], start: false, rev: '' },
 			call: wrap((a) => A.begin('setup', a)) }
 	}
 };

@@ -91,7 +91,12 @@ function buildArgs(st, rev) {
 	}
 	a.adapt = !!st.adapt;
 	a.lan = st.adapt ? st.lan : [];
-	if (st.source === 'url') {
+	if (st.adapt && st.skip && st.skip.length) a.skip = st.skip.slice();
+	// 链接内容已在第二步读取并预览过补全：按导入写入同一份内容，保证写入的与预览一致
+	if (st.source === 'url' && st.fetched) {
+		a.source = 'import';
+		a.content = st.fetched.content;
+	} else if (st.source === 'url') {
 		a.url = String(st.url || '').trim();
 		a.ua = String(st.ua || '').trim();
 	} else {
@@ -115,6 +120,28 @@ function resultLines(s) {
 	return lines;
 }
 
+// 下载内容的概况：「12 个节点 · 2 个订阅 · 8 个策略组 · 120 条规则」，没有的项省略
+function summaryText(sum) {
+	if (!sum) return '';
+	const parts = [ [ sum.proxies, '个节点' ], [ sum.providers, '个订阅' ], [ sum.groups, '个策略组' ], [ sum.rules, '条规则' ] ]
+		.filter(x => x[0] > 0).map(x => x[0] + ' ' + x[1]);
+	return parts.length ? parts.join(' · ') : '没有节点与规则';
+}
+
+// 节点订阅改用内置模板时预填的订阅行：名称取域名（去掉端口），与后端名称规则兼容
+function subFromUrl(url, ua) {
+	const name = urlHost(url).replace(/:\d+$/, '').slice(0, 64) || '订阅1';
+	const r = { name: name, url: String(url || '').trim() };
+	if (ua) r.ua = String(ua).trim();
+	return r;
+}
+
+// 跳过项只保留仍存在的可选改动
+function keepSkip(skip, changes) {
+	const ok = (changes || []).filter(c => c.optional).map(c => c.id);
+	return (skip || []).filter(id => ok.indexOf(id) >= 0);
+}
+
 function urlHost(u) {
 	const m = /^https?:\/\/([^/?#]+)/i.exec(u || '');
 	return m ? m[1].replace(/^.*@/, '') : '';
@@ -129,7 +156,7 @@ function randomSecret() {
 /* ---------- 页面 ---------- */
 
 return view.extend({
-	validateSubs, defaultLan, lanChoices, buildArgs, firstStep, resultLines,
+	validateSubs, defaultLan, lanChoices, buildArgs, firstStep, resultLines, summaryText, subFromUrl, keepSkip,
 
 	handleSave: null,
 	handleSaveApply: null,
@@ -149,7 +176,8 @@ return view.extend({
 		this.ifs = (data[1] && data[1].ok && data[1].list) || [];
 		this.st = {
 			source: 'template', lan: defaultLan(this.ifs, status.lan_default), secret: '', subs: [],
-			url: '', ua: '', content: '', adapt: true, start: true, keep: false
+			url: '', ua: '', content: '', adapt: true, start: true, keep: false,
+			fetched: null, fetchFailed: false, changes: null, skip: []
 		};
 		this.reached = 0;
 
@@ -286,9 +314,16 @@ return view.extend({
 	cardUrl() {
 		this.urlInput = E('input', { 'class': 'cbi-input-text', type: 'url', placeholder: 'https://…', spellcheck: 'false', autocomplete: 'off' });
 		this.uaInput = E('input', { 'class': 'cbi-input-text', type: 'text', placeholder: 'clash.meta' });
+		// 地址或 UA 改了，之前读取的内容就作废
+		const reset = () => { this.st.fetched = null; this.st.fetchFailed = false; this.urlNote.replaceChildren(); };
+		this.urlInput.addEventListener('input', reset);
+		this.uaInput.addEventListener('input', reset);
+		this.urlNote = E('div', {});
 		return mui.card('从链接下载', [
 			mui.field('配置地址', this.urlInput, '返回完整 mihomo（Clash Meta）配置的链接。服务运行时经本机代理下载，否则直连；地址不会写进日志。'),
-			mui.field('User-Agent', this.uaInput, '留空使用 clash.meta；部分订阅按 UA 决定返回的格式')
+			mui.field('User-Agent', this.uaInput, '留空使用 clash.meta；部分订阅按 UA 决定返回的格式'),
+			this.urlNote,
+			E('p', { 'class': 'mh-note' }, '点「下一步」时先读取一次链接，确认是 mihomo 配置；如果是节点订阅（分享链接或 base64），请改用内置模板。')
 		], { cls: 'mh-src-card' });
 	},
 
@@ -307,7 +342,7 @@ return view.extend({
 		this.adaptBox = E('input', { type: 'checkbox', 'change': () => this.syncConfig() });
 		this.adaptBox.checked = true;
 		this.adaptField = mui.field('补全设置', E('label', { 'class': 'mh-check' }, [ this.adaptBox, ' 补全路由器所需设置（推荐）' ]),
-			'添加 eBPF 透明代理入站、DNS 监听与劫持规则，控制器改为 0.0.0.0 并配好 zashboard，关闭 TUN；已有的同类设置保持不变。');
+			'添加 eBPF 透明代理入站、DNS 监听与劫持规则，控制器改为 0.0.0.0 并配好 zashboard，关闭 TUN，移除冲突的透明代理入站；已有的同类设置保持不变。下一步会列出具体改动，可逐项取消可选项。');
 		this.lanBox = E('div', { 'class': 'mh-lan' });
 		this.lanField = mui.field('下联接口', this.lanBox, '经过这些接口的局域网设备流量走透明代理，通常是 br-lan');
 		this.drawLan();
@@ -377,9 +412,130 @@ return view.extend({
 	nextFromConfig() {
 		const err = this.collect();
 		this.cfgErr.textContent = err || '';
-		if (err) return;
-		this.st.keep = false;
-		this.go(2);
+		if (err || this.busy) return;
+		const st = this.st;
+		this.busy = true;
+		this.cfgErr.className = 'mh-foot-note';
+		this.cfgErr.textContent = '正在检查配置…';
+		const fetch = st.source === 'url' && !st.fetched && !st.fetchFailed ? this.fetchUrl() : Promise.resolve();
+		fetch.then(() => this.loadChanges()).then(() => {
+			this.cfgErr.textContent = '';
+			st.keep = false;
+			this.go(2);
+		}, e => {
+			this.cfgErr.className = 'mh-foot-note mh-err';
+			this.cfgErr.textContent = e.message;
+		}).then(() => {
+			this.busy = false;
+			this.cfgErr.className = 'mh-foot-note mh-err';
+		});
+	},
+
+	// 读取链接并识别内容。读取失败时允许再点一次「下一步」改由后台任务下载
+	fetchUrl() {
+		const st = this.st;
+		const note = (cls, kids) => this.urlNote.replaceChildren(E('div', { 'class': 'mh-callout' + (cls ? ' ' + cls : '') }, kids));
+		return api.rpc.setupFetch(st.url, st.ua).then(r => {
+			if (!r || !r.ok) {
+				st.fetchFailed = true;
+				note('', [ E('div', {}, [ E('b', {}, '读取失败'),
+					E('span', {}, ((r && r.error) || '未知错误') + '。再点一次「下一步」改由后台任务下载（时限更长），但不能提前预览补全。') ]) ]);
+				throw new Error('读取链接失败');
+			}
+			if (r.kind === 'subscription') {
+				note('', [
+					E('div', {}, [ E('b', {}, '这是节点订阅'), E('span', {}, (r.message || '') + '。内置模板可以直接使用这类订阅。') ]),
+					mui.btn('改用内置模板', () => this.useTemplate(st.url, st.ua), 'mh-btn-sm cbi-button-action')
+				]);
+				throw new Error('链接返回的不是 mihomo 配置');
+			}
+			if (r.kind !== 'config' && r.kind !== 'partial') {
+				note('', [ E('div', {}, [ E('b', {}, '无法识别'), E('span', {}, r.message || '不是 mihomo 配置') ]) ]);
+				throw new Error('链接返回的不是 mihomo 配置');
+			}
+			st.fetched = { content: r.content, summary: r.summary };
+			note('', [ E('div', {}, [ E('b', {}, '已读取'),
+				E('span', { 'class': r.message ? 'mh-warn' : '' }, summaryText(r.summary) + (r.message ? '。' + r.message : '')) ]) ]);
+		});
+	},
+
+	// 节点订阅转到内置模板：填进第一条没填地址的订阅行
+	useTemplate(url, ua) {
+		const sub = subFromUrl(url, ua);
+		let row = Array.from(this.subList.children).find(r => !r.querySelector('.mh-sub-url').value.trim());
+		if (!row) {
+			if (this.subList.children.length >= MAX_SUBS) return mui.notify('订阅过多（最多 ' + MAX_SUBS + ' 个）', 'error');
+			row = this.addSubRow();
+		}
+		if (!row.querySelector('.mh-sub-name').value.trim()) row.querySelector('.mh-sub-name').value = sub.name;
+		row.querySelector('.mh-sub-url').value = sub.url;
+		row.querySelector('.mh-sub-ua').value = sub.ua || '';
+		this.setSource('template');
+		row.querySelector('.mh-sub-url').focus();
+	},
+
+	// 要补全的内容：导入的文本，或已读取的链接内容；链接读取失败改由后台下载时为 null
+	adaptContent() {
+		const st = this.st;
+		if (st.source === 'import') return st.content;
+		return st.fetched ? st.fetched.content : null;
+	},
+
+	// 先在临时文件上试一遍补全，得到改动清单；配置本身有错时在这一步就报出来
+	loadChanges() {
+		const st = this.st;
+		const content = st.source !== 'template' && st.adapt ? this.adaptContent() : null;
+		if (content == null) {
+			st.changes = null;
+			return Promise.resolve();
+		}
+		return api.setupAdapt({ content: content, lan: st.lan, secret: '', skip: [] }).then(r => {
+			if (!r || !r.ok) throw new Error('配置有误：' + ((r && r.error) || '未知错误'));
+			st.changes = r.changes || [];
+			st.skip = keepSkip(st.skip, st.changes);
+		});
+	},
+
+	drawChanges() {
+		const st = this.st;
+		if (!st.changes) return '';
+		if (!st.changes.length) return mui.row('补全设置', '无需改动，配置已包含路由器所需设置');
+		const items = st.changes.map(c => {
+			const box = E('input', { type: 'checkbox', 'change': ev => {
+				st.skip = ev.target.checked ? st.skip.filter(x => x !== c.id) : st.skip.concat(c.id);
+			} });
+			box.checked = st.skip.indexOf(c.id) < 0;
+			box.disabled = !c.optional;
+			return E('label', { 'class': 'mh-check mh-change', title: c.optional ? '' : '透明代理工作所必需，不能取消' }, [
+				box, ' ', E('span', {}, [
+					E('b', {}, c.title), c.optional ? E('span', { 'class': 'mh-sub' }, '（可选）') : '',
+					c.detail ? E('span', { 'class': 'mh-sub mh-change-detail' }, c.detail) : ''
+				])
+			]);
+		});
+		return E('div', { 'class': 'mh-changes' }, [
+			E('b', {}, '将补全的设置'),
+			E('p', { 'class': 'mh-note' }, '必需项是透明代理工作所需，不能取消；可选项可以取消勾选。'),
+			E('div', { 'class': 'mh-change-list' }, items),
+			E('div', { 'class': 'mh-actions mh-actions-left' }, mui.btn('查看补全后的配置', ev => this.previewAdapt(ev.currentTarget), 'mh-btn-sm'))
+		]);
+	},
+
+	previewAdapt(btn) {
+		const st = this.st;
+		btn.disabled = true;
+		api.setupAdapt({ content: this.adaptContent(), lan: st.lan, secret: '', skip: st.skip }).then(r => {
+			if (!r || !r.ok) throw new Error((r && r.error) || '未知错误');
+			const rnd = (r.changes || []).some(c => c.id === 'secret' && c.applied);
+			ui.showModal('补全后的配置', [
+				rnd ? E('p', { 'class': 'mh-note' }, '面板密钥为随机生成，最终写入的值与预览不同。') : '',
+				E('pre', { 'class': 'mh-pre mh-pre-tall' }, r.content),
+				E('div', { 'class': 'right' }, [
+					E('button', { 'class': 'btn', 'click': () => mui.download('config.yaml', r.content) }, '下载'), ' ',
+					E('button', { 'class': 'btn cbi-button-action', 'click': () => ui.hideModal() }, '关闭')
+				])
+			]);
+		}).catch(e => mui.notify('生成失败：' + e.message, 'error')).then(() => { btn.disabled = false; });
 	},
 
 	preview() {
@@ -422,14 +578,15 @@ return view.extend({
 		let cfg;
 		if (st.keep) cfg = '保留现有配置';
 		else if (st.source === 'template') cfg = '内置模板 · ' + st.subs.length + ' 个订阅（' + st.subs.map(x => x.name).join('、') + '）';
-		else if (st.source === 'url') cfg = '从 ' + urlHost(st.url) + ' 下载';
+		else if (st.source === 'url') cfg = '从 ' + urlHost(st.url) + ' 下载' + (st.fetched ? ' · ' + summaryText(st.fetched.summary) : '');
 		else cfg = '导入 · ' + st.content.split('\n').length + ' 行';
 		const routerSet = !st.keep && (st.source === 'template' || st.adapt);
 		this.summaryBox.replaceChildren(
 			mui.row('内核', this.coreVersion || '未安装'),
 			mui.row('配置', E('span', { 'class': 'mh-ellipsis', title: cfg }, cfg)),
-			!st.keep && st.source !== 'template' ? mui.row('补全设置', st.adapt ? '是' : '否') : '',
+			!st.keep && st.source !== 'template' && !(st.adapt && st.changes) ? mui.row('补全设置', st.adapt ? '是' : '否') : '',
 			routerSet ? mui.row('下联接口', st.lan.join('、')) : '',
+			!st.keep && st.source !== 'template' && st.adapt ? this.drawChanges() : '',
 			!st.keep && st.source === 'template' ? mui.row('面板密钥', st.secret ? '已填写' : '随机生成') : '',
 			!st.keep ? mui.row('现有配置', s.config ? E('span', { 'class': 'mh-warn' }, '将被覆盖（覆盖前自动备份）') : '无') : '',
 			mui.row('服务', running ? '运行中，' + (st.keep ? '将重启' : '将按新配置重启') : '未运行')

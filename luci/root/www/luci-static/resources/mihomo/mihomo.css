@@ -374,6 +374,12 @@ div.mh-actions.mh-actions-left{justify-content:flex-start}
 .mh-lan .mh-upstream{opacity:.7}
 .mh-textarea{display:block;width:100%;min-height:240px;padding:10px 12px;border:1px solid var(--hairline,#e3e6ea);border-radius:var(--radius-base,.5rem);background:var(--surface-sunken,#f4f7fa);color:inherit;font:.78rem/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical}
 .mh-pre.mh-pre-tall{max-height:60vh}
+.mh-changes{margin-top:10px;padding-top:10px;border-top:1px dashed color-mix(in srgb,var(--hairline,#ddd) 70%,transparent)}
+.mh-change-list{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.mh-check.mh-change{align-items:flex-start}
+.mh-check.mh-change input{margin-top:3px}
+.mh-check.mh-change:has(input:disabled){cursor:default}
+.mh-change-detail{display:block;font-size:.78rem}
 .mh-check.mh-start{display:flex;margin-top:12px;padding-top:12px;border-top:1px solid var(--hairline,#e3e6ea)}
 
 /* 设置向导：完成 */

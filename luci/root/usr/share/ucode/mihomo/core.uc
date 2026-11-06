@@ -183,8 +183,10 @@ function fetch(url, out, opts) {
 	opts ??= {};
 	let list = opts.routes ?? routes(settings(), proxy_port());
 	let extra = join(' ', map(opts.args ?? [], U.shq));
+	// max_time：在 RPC 里同步下载时限制每条线路的总时长，避免超过 LuCI 的调用超时
 	let timing = opts.big ? '--connect-timeout 10 --max-time 600 --retry 1'
-		: opts.quick ? '--connect-timeout 5 --max-time 8' : '--connect-timeout 10 --max-time 30 --retry 1';
+		: opts.quick ? '--connect-timeout 5 --max-time 8'
+		: opts.max_time ? sprintf('--connect-timeout 5 --max-time %d', opts.max_time) : '--connect-timeout 10 --max-time 30 --retry 1';
 	let errs = [];
 	for (let r in list) {
 		fs.unlink(out);

@@ -182,6 +182,75 @@ ok(v.ok, '补全后通过 mihomo -t', v);
 
 a = adapt('proxies: [\n');
 ok(!a.r.ok, '语法错误时报错');
+
+/* ---------- 补全：改动清单与跳过可选项 ---------- */
+
+let ids = (r) => map(r.changes ?? [], (c) => c.id);
+let ch = (r, id) => filter(r.changes ?? [], (c) => c.id == id)[0];
+
+a = adapt(without('secret'), { ...AARGS, skip: ['secret'] });
+eq([a.r.ok, a.x.secret, ch(a.r, 'secret')?.applied, ch(a.r, 'secret')?.optional], [true, null, false, true], '跳过可选项：列出但不应用');
+eq(a.r.adapted, [], '跳过的项不算进已补全');
+a = adapt(replace(BASE, 'tun:\n  enable: false', 'tun:\n  enable: true'), { ...AARGS, skip: ['tun'] });
+eq([a.x.tun.enable, ch(a.r, 'tun')?.applied], [false, true], '必需项不能跳过');
+a = adapt(BASE, { ...AARGS, skip: ['Bad Id'] });
+ok(!a.r.ok, '跳过项格式无效时报错', a.r);
+
+a = adapt(replace(BASE, 'listeners:\n', 'tproxy-port: 7893\nredir-port: 7892\nlisteners:\n  - {name: tp, type: tproxy, port: 7894}\n') +
+	'  - {name: mx, type: mixed, port: 7895}\n');
+eq([a.r.ok, map(a.x.listeners, (l) => l.name), a.x['tproxy-port'], a.x['redir-port']], [true, ['ebpf-in', 'mx'], null, null],
+	'移除冲突的 tproxy 入站与透明代理端口，保留 mixed 入站', a.r);
+eq([ch(a.r, 'listeners')?.optional, ch(a.r, 'ports')?.optional], [true, true], '冲突入站与端口是可选项');
+a = adapt(replace(BASE, 'listeners:\n', 'tproxy-port: 7893\nlisteners:\n  - {name: tp, type: tproxy, port: 7894}\n'),
+	{ ...AARGS, skip: ['listeners', 'ports'] });
+eq([length(a.x.listeners), a.x['tproxy-port']], [2, 7893], '跳过后保留冲突入站与端口');
+
+a = adapt(BASE + 'interface-name: nonexist9\n');
+eq([a.x['interface-name'], ch(a.r, 'iface')?.optional], [null, false], '本机不存在的出站网卡绑定被移除');
+a = adapt(BASE + 'interface-name: lo\n');
+eq([a.x['interface-name'], ch(a.r, 'iface')], ['lo', null], '存在的网卡保留');
+
+a = adapt(BASE + 'proxy-providers:\n  a:\n    type: http\n    url: https://a.example/s\n    path: /etc/openclash/proxy_provider/a.yaml\n' +
+	'  b:\n    type: http\n    url: https://b.example/s\n    path: ' + P.HOME + '/proxy_provider/b.yaml\n' +
+	'rule-providers:\n  r:\n    type: http\n    behavior: domain\n    url: https://r.example/r.yaml\n    path: ../r.yaml\n');
+eq([a.x['proxy-providers'].a.path, a.x['proxy-providers'].b.path, a.x['rule-providers'].r.path],
+	['./proxy_provider/a.yaml', P.HOME + '/proxy_provider/b.yaml', './rule_provider/r.yaml'], '配置目录以外的路径改为相对路径，目录内的保留');
+
+a = adapt(replace(BASE, '  - DST-PORT,53,DNS_Hijack\n', ''));
+eq([length(a.x.proxies), a.x.rules], [2, ['DST-PORT,53,DNS_Hijack', 'MATCH,DIRECT']], '已有 DNS 出站但缺规则时只补规则');
+a = adapt(replace(BASE, '  - DST-PORT,53,DNS_Hijack\n', '  - DST-PORT,53,DIRECT\n'));
+eq(a.x.rules[0], 'DST-PORT,53,DNS_Hijack', '53 端口规则指向别处时在最前面补上');
+
+a = adapt(replace(BASE, '{name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp]}',
+	'{name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp], dns-mode: hijack, local: {data-plane: cgroup}}'));
+eq([a.r.ok, a.x.listeners[0]['dns-mode'], a.x.listeners[0].local['dns-mode'], ch(a.r, 'ebpf')?.title], [true, null, 'hijack', '规范 eBPF 入站'],
+	'eBPF 旧写法展开到 local', a.r);
+a = adapt(replace(replace(BASE, '{name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp]}',
+	'{name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp], local: {data-plane: cgroup}}'),
+	'  - {name: dummy,', '  - {name: ts, type: tailscale}\n  - {name: dummy,'));
+eq(a.x.listeners[0].local['bypass-exclude'], ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'], '有 Tailscale 时补 Tailnet 的 bypass-exclude', a.r);
+
+/* ---------- 补全预览 ---------- */
+
+let before = fs.readfile(P.CONFIG);
+let pv = SU.adapt_preview({ content: without('secret'), lan: ['eth9'], skip: [] });
+ok(pv.ok && index(ids(pv), 'secret') >= 0 && match(pv.content, /\nsecret: /), '预览返回改动清单与补全后的内容', pv);
+pv = SU.adapt_preview({ content: without('secret'), lan: ['eth9'], skip: ['secret'] });
+ok(pv.ok && !match(pv.content, /\nsecret: /), '预览按跳过项生成');
+eq(fs.readfile(P.CONFIG), before, '预览不改动正式配置');
+eq(length(filter(fs.lsdir(P.RUN_DIR) ?? [], (n) => match(n, /^(preview|adapt|classify)-/))), 0, '预览清理临时文件');
+eq(SU.adapt_preview({ content: '  ' }).ok, false, '预览拒绝空内容');
+
+/* ---------- 识别内容 ---------- */
+
+eq(SU.classify('vmess://abc\ntrojan://p@h:443#x\n\n').kind, 'subscription', '分享链接列表识别为节点订阅');
+eq(SU.classify(b64enc('ss://YWVz@h:1#a\nvless://u@h:443?x=1#b\n')).kind, 'subscription', 'base64 订阅识别为节点订阅');
+let cl = SU.classify(BASE);
+eq([cl.kind, cl.summary], ['config', { proxies: 1, providers: 0, groups: 0, rules: 2 }], '完整配置识别并统计（不计 dns 出站）');
+eq(SU.classify('mixed-port: 7890\n').kind, 'partial', '缺少节点与规则时为不完整配置');
+eq(SU.classify('<html>blocked</html>').kind, 'invalid', '非 YAML 内容');
+eq(SU.classify('').kind, 'invalid', '空内容');
+eq(SU.fetch_config({ url: 'ftp://x' }).ok, false, '下载地址必须是 http(s)');
 fs.unlink(AF);
 
 /* ---------- status ---------- */
