@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
+# dash（Ubuntu 的 sh）不支持两位数的文件描述符；设备上的 mksh/ash 支持。这里需要测 12、19 号描述符，改用 bash 运行
+if ! (eval 'exec 12>/dev/null') 2>/dev/null; then
+  command -v bash >/dev/null 2>&1 || { echo 'SKIP: 当前 sh 不支持两位数文件描述符且没有 bash'; exit 0; }
+  exec bash "$0" "$@"
+fi
 ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd)
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT HUP INT TERM

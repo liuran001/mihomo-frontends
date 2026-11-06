@@ -23,6 +23,9 @@ jobs:
       - name: 配置 Gradle 缓存与 Wrapper 校验
         uses: gradle/actions/setup-gradle@v6
       - uses: android-actions/setup-android@v3
+        with:
+          # 默认会装已下架的 tools 包导致 sdkmanager 失败；只装需要的
+          packages: ''
       - name: 安装按需设备桥接编译依赖
         run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - name: 安装 Go
