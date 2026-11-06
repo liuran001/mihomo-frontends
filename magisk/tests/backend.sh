@@ -78,7 +78,7 @@ EOF
 cp "$MIHOMO_DATA/config.yaml" "$TEST_DIR/original"
 printf '%s\n' 'mWifiInfo SSID: "AndroidWifi", BSSID: 00:13:10:85:fe:01, Supplicant state: COMPLETED' >"$TEST_DIR/wifi"
 check call_policy get
-check contains "$TEST_DIR/result" '"current_ssid":"AndroidWifi"'
+check contains "$TEST_DIR/result" '"current_ssid":""'
 check contains "$TEST_DIR/result" '"tethering_interfaces":"ap0,wlan1,rndis0,usb0,bt-pan"'
 check contains "$TEST_DIR/result" '"autostart":false'
 check set_policy 0 0 '' 'com.example.app' only 'AndroidWifi'
@@ -127,6 +127,9 @@ check call_policy get
 check contains "$TEST_DIR/result" '"current_ssid":"Cafe, \"A\""'
 check contains "$TEST_DIR/result" '"allowed":true'
 printf '%s\n' '11-04 history mWifiInfo SSID: "Cafe, "A"", BSSID: 00:13:10:85:fe:01, Supplicant state: COMPLETED' 'mWifiInfo SSID: <unknown ssid>, BSSID: <none>, Supplicant state: DISCONNECTED' >"$TEST_DIR/wifi"
+check call_policy ssid
+check contains "$TEST_DIR/result" '"current_ssid":""'
+check set_policy 0 0 '' '' only 'Cafe, "A"'
 check call_policy get
 check contains "$TEST_DIR/result" '"current_ssid":""'
 check contains "$TEST_DIR/result" '"allowed":false'

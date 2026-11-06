@@ -99,10 +99,8 @@ return view.extend({
 		]);
 		const root = E('div', { 'class': 'mh' }, [ header.render(), this.banner, toolbar, this.grid, this.other ]);
 		this.refresh();
-		this.timer = setInterval(() => {
-			if (!document.body.contains(root)) return clearInterval(this.timer);
-			if (!document.hidden) this.refreshRuntime();
-		}, 30000);
+		if (this.poller) this.poller.close();
+		this.poller = api.poll(root, 30000, () => this.refreshRuntime(), false);
 		return root;
 	},
 

@@ -47,6 +47,8 @@ return view.extend({
 		this.body = E('div', {});
 		const root = E('div', { 'class': 'mh' }, [ header.render(), this.body ]);
 		this.show(st);
+		if (this.poller) this.poller.close();
+		this.poller = api.poll(root, 3000, () => this.st && this.st.install.installing ? this.refresh() : null, false);
 		return root;
 	},
 
@@ -55,7 +57,6 @@ return view.extend({
 	},
 
 	show(st) {
-		clearTimeout(this.timer);
 		if (!st || !st.ok) {
 			this.body.replaceChildren(mui.card('Sub-Store', mui.empty((st && st.error) || '读取失败')));
 			return;
@@ -65,8 +66,6 @@ return view.extend({
 		if (st.mode === 'local') parts.push(this.localCard(st));
 		if (st.mode !== 'off') parts.push(this.subsCard(st));
 		this.body.replaceChildren(...parts);
-		// 安装在后台进行：每 3 秒刷新进度
-		if (st.install.installing) this.timer = setTimeout(() => this.refresh(), 3000);
 	},
 
 	settingsCard(st) {

@@ -85,7 +85,7 @@ return view.extend({
 		const tabSys = E('button', { 'class': 'mh-seg-btn', 'click': () => this.switchTab(false) }, '系统日志');
 		this.tabs = [ tabLive, tabSys ];
 
-		const root = E('div', { 'class': 'mh' }, [
+		this.root = E('div', { 'class': 'mh' }, [
 			header.render(),
 			mui.card(null, [
 				E('div', { 'class': 'mh-toolbar' }, [ E('div', { 'class': 'mh-tabs' }, this.tabs), E('span', { 'class': 'mh-grow' }), this.liveTools, this.sysTools, this.diagBtn ]),
@@ -94,12 +94,12 @@ return view.extend({
 			])
 		]);
 		this.connect();
-		return root;
+		return this.root;
 	},
 
 	connect() {
 		if (this.stream) this.stream.close();
-		this.stream = api.stream('/logs?level=' + this.level, d => this.add({ type: d.type || 'info', payload: String(d.payload || ''), time: clock() }));
+		this.stream = api.stream('/logs?level=' + this.level, d => this.add({ type: d.type || 'info', payload: String(d.payload || ''), time: clock() }), this.root);
 	},
 
 	setLevel(level) {
@@ -151,7 +151,11 @@ return view.extend({
 		this.liveTools.hidden = !live;
 		this.sysBox.hidden = live;
 		this.sysTools.hidden = live;
-		if (!live) this.loadSystem();
+		if (live) this.connect();
+		else {
+			if (this.stream) this.stream.close();
+			this.loadSystem();
+		}
 	},
 
 	// 诊断信息 = 系统/插件/内核/网络概况 + 最近系统日志 + 页面上的实时日志，打码后可直接复制

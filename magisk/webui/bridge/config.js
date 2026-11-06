@@ -377,14 +377,21 @@
       used: (Array.isArray(data.rules) ? data.rules : []).some((rule) => typeof rule === 'string' && ruleUses(rule, name)),
       fields: RULE_PROVIDER_FIELDS.map((field) => ({ ...fieldState(field, isObject(item) ? item : {}, null, extra), id: field.key.join('.'), path: field.key })),
     }));
+    return { ok: true, sections, providers, ruleProviders, ...tailscaleSchema(data), providerFields: PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
+      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), summary: summarize(doc, data) };
+  }
+
+  function tailscaleSchema(data) {
     const tailscale = tailscaleList(data).map((item) => ({
       name: String(item.name || ''), type: 'tailscale', editable: true, stateDir: typeof item['state-dir'] === 'string' ? item['state-dir'] : '',
       used: !!item['auth-key'], webui: webuiServe(item), serve: userServe(item),
-      fields: TAILSCALE_FIELDS.map((field) => ({ ...fieldState(field, item, null, extra), id: field.key.join('.'), path: field.key })),
+      fields: TAILSCALE_FIELDS.map((field) => ({ ...fieldState(field, item, null, null), id: field.key.join('.'), path: field.key })),
     }));
-    return { ok: true, sections, providers, ruleProviders, tailscale, providerFields: PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
-      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
-      tailscaleFields: TAILSCALE_FIELDS.map((field) => fieldState(field, {}, null, extra)), summary: summarize(doc, data) };
+    return { ok: true, tailscale, tailscaleFields: TAILSCALE_FIELDS.map((field) => fieldState(field, {}, null, null)) };
+  }
+
+  function tailscale(content) {
+    return tailscaleSchema(plain(parse(content)));
   }
 
   function ruleUses(rule, name) {
@@ -1034,5 +1041,5 @@
   }
 
   // 订阅转配置时，把多个订阅写进内置模板之后统一走 optimize。
-  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, patch, analyze, optimize, check });
+  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, tailscale, patch, analyze, optimize, check });
 })(typeof window !== 'undefined' ? window : globalThis);

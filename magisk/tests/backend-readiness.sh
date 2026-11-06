@@ -25,29 +25,38 @@ tool() {
   case "$1" in
     setsid) touch "$RUN_DIR/mock-running" ;;
     curl)
-      if [ "$6" != "$CONTROL_SOCKET" ] || [ "$7" != http://localhost/ebpf ]; then
+      if [ "$6" != "$CONTROL_SOCKET" ] || { [ "$7" != http://localhost/ebpf/summary ] && [ "$7" != http://localhost/ebpf ]; }; then
         echo 'wrong readiness endpoint' >&2; return 1
       fi
+      printf '%s\n' "$7" >>"$RUN_DIR/mock-endpoints"
       case "$(cat "$RUN_DIR/mock-response")" in
-        missing) return 22 ;;
-        empty) printf '{"inbounds":[]}\n' ;;
-        ready) printf '{"inbounds":[{"id":1,"mode":"local"}]}\n' ;;
+        missing) printf '404\n' ;;
+        empty) printf '{"inbounds":[]}\n200\n' ;;
+        ready) printf '{"inbounds":[{"id":1,"mode":"local"}]}\n200\n' ;;
+        legacy)
+          if [ "$7" = http://localhost/ebpf/summary ]; then printf '404\n'
+          else printf '{"inbounds":[{"id":1,"mode":"local"}]}\n200\n'; fi
+          ;;
       esac
       ;;
     *) return 127 ;;
   esac
 }
-for response in missing empty ready; do
+for response in missing empty ready legacy; do
   printf '%s\n' "$response" >"$RUN_DIR/mock-response"
   rm -f "$RUN_DIR/mock-running" "$RUN_DIR/mock-stopped"
+  : >"$RUN_DIR/mock-endpoints"
   if start_core >"$TEST_DIR/result" 2>&1; then
-    [ "$response" = ready ] || { echo "FAIL: accepted $response /ebpf"; exit 1; }
+    { [ "$response" = ready ] || [ "$response" = legacy ]; } || { echo "FAIL: accepted $response /ebpf"; exit 1; }
     test -f "$RUN_DIR/mock-running"
   else
-    [ "$response" != ready ] || { cat "$TEST_DIR/result"; exit 1; }
+    { [ "$response" != ready ] && [ "$response" != legacy ]; } || { cat "$TEST_DIR/result"; exit 1; }
     test -f "$RUN_DIR/mock-stopped"
     test ! -f "$RUN_DIR/mock-running"
     grep -q '/ebpf' "$TEST_DIR/result"
+  fi
+  if [ "$response" = ready ] || [ "$response" = empty ]; then
+    ! grep -qx 'http://localhost/ebpf' "$RUN_DIR/mock-endpoints"
   fi
 done
 echo 'PASS: real start_core rejects missing/empty /ebpf and accepts nonempty (process/network mocked)'

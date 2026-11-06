@@ -114,27 +114,48 @@
     return !root.ksu && !!root.location && /^https?:$/.test(root.location.protocol);
   }
 
-  async function remoteRun(script, args, timeout, env) {
+  async function remoteJson(url, init, timeout = 10000) {
     const abort = typeof AbortController === 'function' ? new AbortController() : null;
-    const timer = setTimeout(() => abort && abort.abort(), timeout + 5000);
+    let expired = false;
+    let timer;
+    const deadline = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(new Error('请求超时；请检查网页服务连接后重试，写入操作可能仍在执行，勿重复提交'));
+        if (abort) abort.abort();
+      }, timeout);
+    });
     try {
-      const response = await root.fetch('api/run', {
-        method: 'POST', credentials: 'same-origin', signal: abort ? abort.signal : undefined,
-        headers: { 'Content-Type': 'application/json', 'X-Mihomo-Request': '1' },
-        body: JSON.stringify({ script, args, env, timeout }),
-      });
-      if (response.status === 401) {
-        root.location.href = 'login?next=' + encodeURIComponent(root.location.pathname + root.location.hash);
-        return { errno: -1, stdout: '', stderr: '登录已失效，请重新登录' };
-      }
-      const body = await response.json().catch(() => null);
-      if (!body || typeof body !== 'object') return { errno: -1, stdout: '', stderr: '网页服务 HTTP ' + response.status };
-      if (!response.ok) return { errno: -1, stdout: '', stderr: String(body.error || ('网页服务 HTTP ' + response.status)) };
-      return { errno: Number(body.errno), stdout: String(body.stdout || ''), stderr: String(body.stderr || '') };
-    } catch (error) {
-      return { errno: -1, stdout: '', stderr: abort && abort.signal.aborted ? '请求超时；命令可能仍在执行，请刷新确认实际状态，勿重复提交' : '网页服务不可达：' + error.message };
+      const pending = (async () => {
+        const response = await root.fetch(url, {
+          ...init, credentials: 'same-origin', signal: abort ? abort.signal : undefined,
+          headers: { ...init.headers, 'X-Mihomo-Request': '1' },
+        });
+        if (expired) throw new Error('请求已超时');
+        if (response.status === 401) {
+          root.location.href = 'login?next=' + encodeURIComponent(root.location.pathname + root.location.hash);
+          throw new Error('登录已失效，请重新登录');
+        }
+        const body = await response.json().catch(() => null);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('网页服务 HTTP ' + response.status + '：响应格式无效');
+        if (!response.ok) throw Object.assign(new Error(String(body.error || ('网页服务 HTTP ' + response.status))), { locked: body.locked === true });
+        return body;
+      })();
+      return await Promise.race([pending, deadline]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async function remoteRun(script, args, timeout, env) {
+    try {
+      const body = await remoteJson('api/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ script, args, env, timeout }),
+      }, timeout + 5000);
+      return { errno: Number(body.errno), stdout: String(body.stdout || ''), stderr: String(body.stderr || '') };
+    } catch (error) {
+      return { errno: -1, stdout: '', stderr: '网页服务请求失败：' + error.message };
     }
   }
 
@@ -218,7 +239,7 @@
       return match[1].replace(/''/g, "'");
     }
     const plain = text.replace(/\s+#.*$/, '').trim();
-    if (/^[|>&*!{\[]/.test(plain)) throw new Error('控制器地址和密钥请使用单行字符串');
+    if (/^[|>&*!{\[]/.test(plain) && !/^\[[\da-fA-F:]+\]:\d{1,5}$/.test(plain) && !/^\*:\d{1,5}$/.test(plain)) throw new Error('控制器地址和密钥请使用单行字符串');
     return /^(?:null|~)$/i.test(plain) ? '' : plain;
   }
 
@@ -269,25 +290,43 @@
 
   async function controllerFetch(base, detected, payload) {
     const abort = typeof AbortController === 'function' ? new AbortController() : null;
-    const timer = setTimeout(() => abort && abort.abort(), payload.timeout || 10000);
+    let expired = false;
+    let timer;
+    const deadline = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(new Error('控制器请求超时'));
+        if (abort) abort.abort();
+      }, payload.timeout || 10000);
+    });
     try {
-      const headers = { Authorization: 'Bearer ' + detected.secret };
-      const init = { method: payload.method || 'GET', headers, credentials: 'omit', cache: 'no-store', signal: abort ? abort.signal : undefined };
+      const remote = remoteMode();
+      const headers = remote ? { 'X-Mihomo-Request': '1' } : { Authorization: 'Bearer ' + detected.secret };
+      const init = { method: payload.method || 'GET', headers, credentials: remote ? 'same-origin' : 'omit', cache: 'no-store', signal: abort ? abort.signal : undefined };
       if (payload.body !== undefined) {
         headers['Content-Type'] = 'application/json';
         init.body = typeof payload.body === 'string' ? payload.body : JSON.stringify(payload.body);
       }
-      const response = await root.fetch(base + payload.path, init);
-      if (!response || typeof response.status !== 'number' || typeof response.text !== 'function') throw new Error('无效响应');
-      // 网页服务的登录失效等错误不是控制器的响应，交给脚本通道处理
-      if (response.status === 401 && remoteMode()) throw new Error('网页服务 401');
-      return { status: response.status, body: String(await response.text()).trim() };
+      return await Promise.race([(async () => {
+        const response = await root.fetch(base + payload.path, init);
+        if (expired) throw new Error('控制器请求已超时');
+        if (!response || typeof response.status !== 'number' || typeof response.text !== 'function') throw new Error('无效响应');
+        if (response.status === 401 && remote) {
+          root.location.href = 'login?next=' + encodeURIComponent(root.location.pathname + root.location.hash);
+          throw new Error('登录已失效，请重新登录');
+        }
+        return { status: response.status, body: String(await response.text()).trim() };
+      })(), deadline]);
     } finally {
       clearTimeout(timer);
     }
   }
 
   async function controller(payload) {
+    if (remoteMode()) {
+      const response = await controllerFetch(root.location.origin + '/clash', null, payload);
+      return controllerResult(response.status, response.body);
+    }
     const detected = await cachedController();
     let direct = null;
     if (Date.now() >= directBlockedUntil && typeof root.fetch === 'function') {
@@ -361,13 +400,13 @@
     return output.join('\n');
   }
 
-  async function fetchResource(url, consume) {
+  async function fetchResource(url, consume, options = {}) {
     const abort = typeof AbortController === 'function' ? new AbortController() : null;
     let timer;
     try {
       return await Promise.race([
         (async () => {
-          const response = await root.fetch(url, abort ? { signal: abort.signal } : undefined);
+          const response = await root.fetch(url, { ...options, ...(abort ? { signal: abort.signal } : {}) });
           if (!response.ok) throw new Error('HTTP ' + response.status);
           return consume(response);
         })(),
@@ -597,11 +636,31 @@
 
   async function downloadIcon(url) {
     try {
-      const response = await root.fetch(url, { mode: 'cors', credentials: 'omit' });
-      if (response.ok) {
+      return await fetchResource(url, async (response) => {
+        if (Number(response.headers?.get('Content-Length') || 0) > ICON_LIMIT) throw new Error('图标过大');
+        if (response.body?.getReader) {
+          const reader = response.body.getReader();
+          const chunks = [];
+          let size = 0;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              size += value.byteLength;
+              if (size > ICON_LIMIT) throw new Error('图标过大');
+              chunks.push(value);
+            }
+            const bytes = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+            if (!size) throw new Error('图标为空');
+            return bytes;
+          } finally { await reader.cancel().catch(() => {}); }
+        }
         const bytes = new Uint8Array(await response.arrayBuffer());
-        if (bytes.length && bytes.length <= ICON_LIMIT) return bytes;
-      }
+        if (!bytes.length || bytes.length > ICON_LIMIT) throw new Error('图标为空或过大');
+        return bytes;
+      }, { mode: 'cors', credentials: 'omit' });
     } catch (error) {
       // 跨域或网络失败，改由模块下载
     }
@@ -636,6 +695,7 @@
         throw error;
       });
       proxyIcons.set(url, pending);
+      if (proxyIcons.size > 96) proxyIcons.delete(proxyIcons.keys().next().value);
     }
     return { ok: true, icon: await proxyIcons.get(url) };
   }
@@ -701,7 +761,7 @@
 
   function validController(payload) {
     text(payload.path, 'path');
-    if (!/^\/(?:version|proxies|connections|rules|ebpf|providers\/proxies|group\/[^/?]+\/delay)(?:[/?]|$)/.test(payload.path) || /[\x00-\x20\x7f#\\]/.test(payload.path)) throw new Error('不支持的控制器接口（不读取流接口）');
+    if (!/^\/(?:version|overview|proxies|connections|rules|ebpf|providers\/proxies|group\/[^/?]+\/delay)(?:[/?]|$)/.test(payload.path) || /[\x00-\x20\x7f#\\]/.test(payload.path)) throw new Error('不支持的控制器接口（不读取流接口）');
     const pathname = payload.path.split('?')[0];
     let decoded;
     try { decoded = decodeURIComponent(pathname); }
@@ -803,6 +863,7 @@
     b64encode(payload.bypass_packages), payload.wifi_mode, b64encode(payload.wifi_ssids),
   ], 120000));
   register('controller', ['path', 'method', 'body'], validController, controller);
+  register('policySsid', [], noValidation, () => shJson('policy.sh', ['ssid'], 15000));
   register('apps', ['refresh'], (payload) => boolean(payload.refresh, 'refresh', true), (payload) => getInstalledApps(payload.refresh));
   register('appIcon', ['packageName'], (payload) => validPackage(payload.packageName), (payload) => appIcon(payload.packageName));
   register('proxyIcon', ['url'], (payload) => {
@@ -876,7 +937,7 @@
 
   async function tailscaleEntries() {
     const read = await operations.configRead.run({});
-    return engine().schema(read.content).tailscale;
+    return engine().tailscale(read.content).tailscale;
   }
 
   async function tailscaleEntry(name) {
@@ -902,7 +963,7 @@
     return {
       state,
       loggedIn: state === 'Running' || state === 'Starting' || (typeof item.login === 'string' && item.login !== '' && state !== 'NeedsLogin'),
-      login: item.login || null,
+      login: state === 'NeedsLogin' ? null : item.login || null,
       tailnet: item.tailnet || null,
       magicDns: item.magicDNSSuffix || null,
       hostName: self.hostName || null,
@@ -925,24 +986,33 @@
     }
   }
 
-  register('tailscaleStatus', [], noValidation, async () => {
+  async function tailscaleStatus(entries) {
     const list = [];
+    if (!entries.length) return { ok: true, list, kernel: false };
     const kernel = await kernelTailscaleList();
-    for (const entry of await tailscaleEntries()) {
+    for (const entry of entries) {
       const dir = tailscaleDir(entry.stateDir);
-      const state = dir ? await shJson('tailscale.sh', ['state', dir]) : null;
-      const item = { name: entry.name, stateDir: dir, authKey: entry.used, kernel: kernel !== null, ...tailscaleProfile(state) };
       const live = kernel && kernelTailscale(kernel.find((value) => value && value.name === entry.name));
+      const saved = !live || live.state === 'NotStarted';
+      const state = saved && dir ? await shJson('tailscale.sh', ['state', dir]) : null;
+      const item = { name: entry.name, stateDir: dir, authKey: entry.used, kernel: !!live, ...tailscaleProfile(state) };
       if (live) {
-        // 节点未启动时内核不知道登录资料，保留状态文件里的账号信息
-        const merged = { ...item, ...Object.fromEntries(Object.entries(live).filter(([, value]) => value !== null)) };
-        if (live.state === 'NotStarted') merged.loggedIn = item.loggedIn;
+        const merged = { ...item, ...live };
+        if (saved) Object.assign(merged, tailscaleProfile(state));
         list.push(merged);
       } else {
         list.push(item);
       }
     }
     return { ok: true, list, kernel: kernel !== null };
+  }
+
+  register('tailscaleStatus', [], noValidation, async () => tailscaleStatus(await tailscaleEntries()));
+  register('tailscaleRead', [], noValidation, async () => {
+    const read = await operations.configRead.run({});
+    const schema = engine().tailscale(read.content);
+    const status = await tailscaleStatus(schema.tailscale);
+    return { ...schema, ...status, content: read.content };
   });
   register('tailscaleLogin', ['name', 'wait'], (payload) => {
     tailscaleName(payload);
@@ -1022,16 +1092,72 @@
   // 当前页面是否经网页管理打开，以及来源（lan / tailscale / local）
   register('webuiSession', [], noValidation, async () => {
     if (!remoteMode()) return { ok: true, remote: false };
-    const response = await root.fetch('api/session', { credentials: 'same-origin', headers: { 'X-Mihomo-Request': '1' } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || ('网页服务 HTTP ' + response.status));
+    const body = await remoteJson('api/session', {});
     return { ok: true, remote: true, via: String(body.via || ''), login: String(body.login || ''), passwordless: body.passwordless === true };
   });
   register('webuiLogout', [], noValidation, async () => {
     if (!remoteMode()) return { ok: true };
-    await root.fetch('api/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-Mihomo-Request': '1' } });
+    await remoteJson('api/logout', { method: 'POST' });
     root.location.href = 'login';
     return { ok: true };
+  });
+
+  let enhancedToken = '';
+  const enhancedActions = ['status', 'unlock', 'lock', 'battery', 'sms', 'hotspot', 'hotspot-set', 'terminal', 'scrcpy-set', 'scrcpy-stop'];
+  register('enhancedSet', ['settings'], (payload) => {
+    if (remoteMode() || !root.ksu) throw new Error('增强功能设置只能在本机模块 WebUI 修改');
+    assertObject(payload.settings);
+    for (const [key, value] of Object.entries(payload.settings)) {
+      if (key === 'enabled' || key === 'scrcpy') boolean(value, key);
+      else if (key === 'password') {
+        text(value, key);
+        if (value && (Array.from(value).length < 6 || new TextEncoder().encode(value).length > 256)) throw new Error('操作密码须为 6–256 个字符');
+      } else if (key === 'scrcpy_port') {
+        if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error('web scrcpy 端口无效');
+      } else if (key === 'scrcpy_mode') {
+        if (!['builtin', 'external'].includes(value)) throw new Error('屏幕服务模式无效');
+      } else throw new Error('不支持的增强设置：' + key);
+    }
+  }, async (payload) => {
+    enhancedToken = '';
+    return shJson('webui.sh', ['enhanced-set', b64encode(JSON.stringify(payload.settings))], 30000);
+  });
+
+  register('enhanced', ['action', 'payload'], (payload) => {
+    if (!enhancedActions.includes(payload.action)) throw new Error('不允许的增强操作');
+    assertObject(payload.payload || {});
+    const keys = { status: [], unlock: ['password'], lock: [], battery: [], sms: ['limit'], hotspot: [],
+      'hotspot-set': ['enabled', 'config'], terminal: ['command', 'timeout'],
+      'scrcpy-set': ['enabled', 'port', 'mode', 'max_size', 'fps', 'bit_rate'], 'scrcpy-stop': [] }[payload.action];
+    for (const key of Object.keys(payload.payload || {})) if (!keys.includes(key)) throw new Error('不支持的操作参数：' + key);
+    if (JSON.stringify(payload.payload || {}).length > 20000) throw new Error('增强操作参数过大');
+  }, async (payload) => {
+    try {
+      const body = payload.payload || {};
+      const result = remoteMode()
+        ? await remoteJson('api/enhanced/' + payload.action, {
+          method: payload.action === 'status' ? 'GET' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          ...(payload.action === 'status' ? {} : { body: JSON.stringify(body) }),
+        }, payload.action === 'terminal' ? 65000 : 30000)
+        : await shJson('webui.sh', ['enhanced-request', payload.action, b64encode(JSON.stringify({ token: enhancedToken, payload: body }))], payload.action === 'terminal' ? 70000 : 35000);
+      if (payload.action === 'unlock') enhancedToken = result.token || '';
+      if (payload.action === 'lock') enhancedToken = '';
+      return result;
+    } catch (error) {
+      return { ok: false, error: error.message, locked: error.locked === true || /操作密码|增强功能已锁定/.test(error.message) };
+    }
+  });
+
+  register('scrcpyUrl', [], noValidation, async () => {
+    const session = await operations.enhanced.run({ action: 'status' });
+    if (!session.ok || !session.enabled || !session.scrcpy) throw new Error('请先开启增强功能和 web scrcpy 入口');
+    if (remoteMode()) {
+      if (!session.unlocked) throw new Error('请先解锁增强功能');
+      return { ok: true, url: root.location.origin + '/enhanced/scrcpy/' };
+    }
+    const settings = await operations.webuiStatus.run({});
+    return { ok: true, url: 'http://127.0.0.1:' + settings.settings.port + '/login?next=%2F%23enhanced' };
   });
 
   // zashboard：内核在 /ui/ 提供面板；setup 参数让面板自动添加并连接本机控制器
@@ -1039,7 +1165,6 @@
     const detected = await detectController();
     if (!detected.ui) return { ok: true, available: false, reason: '配置里没有 external-ui，面板未启用' };
     const params = new URLSearchParams({ disableUpgradeCore: '1' });
-    if (detected.secret) params.set('secret', detected.secret);
     if (remoteMode()) {
       // 经网页管理的 /clash/ 反向代理访问控制器
       const location = root.location;
@@ -1050,6 +1175,7 @@
       params.set(https ? 'https' : 'http', '1');
       return { ok: true, available: true, url: location.origin + '/clash/ui/#/setup?' + params.toString() };
     }
+    if (detected.secret) params.set('secret', detected.secret);
     const port = detected.address.slice(detected.address.lastIndexOf(':') + 1);
     const host = detected.address.slice('http://'.length, detected.address.lastIndexOf(':')).replace(/^\[|\]$/g, '');
     params.set('hostname', host);

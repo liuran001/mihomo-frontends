@@ -59,8 +59,8 @@ function subSummary(p) {
 	const used = (info.Upload || 0) + (info.Download || 0);
 	return {
 		name: p.name,
-		alive: list.filter(x => x.alive).length,
-		total: list.length,
+		alive: p.proxies ? list.filter(x => x.alive).length : null,
+		total: p.count == null ? list.length : p.count,
 		used: used,
 		quota: info.Total || 0,
 		ratio: info.Total ? used / info.Total : null,
@@ -145,7 +145,9 @@ return view.extend({
 		});
 
 		this.els.ebpf = E('div', {}, mui.empty('读取中…'));
-		const ebpf = mui.card('eBPF 透明代理', this.els.ebpf);
+		const ebpf = mui.card('eBPF 透明代理', this.els.ebpf, {
+			tools: [ mui.btn('详细诊断', () => this.inspectEbpf(), 'mh-btn-sm') ]
+		});
 
 		this.els.subs = E('div', { 'class': 'mh-sub-list' }, mui.empty('读取中…'));
 		this.els.updateAll = mui.btn('全部更新', () => this.updateAll(), 'mh-btn-sm');
@@ -159,68 +161,68 @@ return view.extend({
 			subs
 		]);
 
-		this.startStreams();
-		this.refreshSlow();
+		this.startStreams(root);
+		if (this.slowPoll) this.slowPoll.close();
+		this.slowPoll = api.poll(root, 30000, () => this.refreshSlow());
 		this.checkSites();
 		this.checkIp();
-		this.timer = setInterval(() => {
-			if (!document.body.contains(root)) return clearInterval(this.timer);
-			this.refreshSlow();
-		}, 10000);
 		return root;
 	},
 
-	startStreams() {
-		api.stream('/traffic', d => {
+	startStreams(root) {
+		if (this.trafficStream) this.trafficStream.close();
+		if (this.summaryPoll) this.summaryPoll.close();
+		this.trafficStream = api.stream('/traffic', d => {
 			this.els.down.textContent = mui.fmtRate(d.down);
 			this.els.up.textContent = mui.fmtRate(d.up);
 			this.net.push([ d.down, d.up ]);
-		});
-		api.stream('/memory', d => {
-			// 连接建立后的第一帧 inuse 为 0
-			if (!d.inuse) return;
-			this.els.mem.textContent = mui.fmtBytes(d.inuse);
-			this.memHist.push(d.inuse);
-			if (this.memHist.length > SPARK_N) this.memHist.shift();
-			this.els.memSpark.replaceChildren(chart.sparkline(this.memHist, { points: SPARK_N }));
-		});
-		api.stream('/connections?interval=2000', d => {
-			const n = (d.connections || []).length;
-			this.els.conns.textContent = String(n);
+		}, root);
+		this.summaryPoll = api.poll(root, 2000, () => api.get('/connections/summary').then(d => {
+			this.els.conns.textContent = String(d.connectionCount);
 			this.els.dlTotal.textContent = mui.fmtBytes(d.downloadTotal);
 			this.els.ulTotal.textContent = mui.fmtBytes(d.uploadTotal);
-			this.connHist.push(n);
+			this.connHist.push(d.connectionCount);
 			if (this.connHist.length > SPARK_N) this.connHist.shift();
 			this.els.connSpark.replaceChildren(chart.sparkline(this.connHist, { points: SPARK_N }));
-		});
+			this.els.mem.textContent = mui.fmtBytes(d.memory);
+			this.memHist.push(d.memory);
+			if (this.memHist.length > SPARK_N) this.memHist.shift();
+			this.els.memSpark.replaceChildren(chart.sparkline(this.memHist, { points: SPARK_N }));
+		}, error => {
+			this.els.conns.textContent = error.status === 404 ? '请升级内核' : '读取失败';
+		}));
 	},
 
 	refreshSlow() {
-		Promise.all([ api.get('/proxies'), this.matchTarget() ]).then(([ p, target ]) => {
-			const r = exitChain(p.proxies || {}, target);
-			const last = r.chain[r.chain.length - 1];
-			this.els.exit.textContent = last ? last + (r.smart ? '（Smart）' : '') : '-';
-			this.els.exitChain.textContent = r.chain.join(' → ');
-			this.els.exitChain.title = r.chain.join(' → ');
-		}, () => {});
-		api.get('/ebpf').then(d => this.renderEbpf(d), e => this.renderEbpf(null, e));
-		api.get('/providers/proxies').then(d => this.renderSubs(d.providers || {}), e => this.els.subs.replaceChildren(mui.empty('无法读取订阅：' + e.message)));
+		if (this.slowPending) return this.slowPending;
+		this.slowPending = Promise.all([
+			api.get('/overview').then(data => {
+				const exit = data.exit || {}, chain = exit.chain || [];
+				const last = chain[chain.length - 1];
+				this.els.exit.textContent = last ? last + (exit.smart ? '（Smart）' : '') : '-';
+				this.els.exitChain.textContent = chain.join(' → ');
+				this.els.exitChain.title = chain.join(' → ');
+				this.renderSubs(data.providers || {});
+			}, error => {
+				this.els.exit.textContent = error.status === 404 ? '请升级内核' : '读取失败';
+				this.els.subs.replaceChildren(mui.empty('无法读取订阅摘要：' + error.message));
+			}),
+			api.get('/ebpf/summary').then(data => this.renderEbpf(data), error => this.renderEbpf(null, error))
+		]).finally(() => { this.slowPending = null; });
+		return this.slowPending;
 	},
 
-	// MATCH 规则指向的策略组；规则不变，只取一次
-	matchTarget() {
-		if (!this._match)
-			this._match = api.get('/rules').then(d => {
-				const m = (d.rules || []).filter(r => r.type === 'Match').pop();
-				return m ? m.proxy : 'GLOBAL';
-			}, e => { this._match = null; throw e; });
-		return this._match;
+	inspectEbpf() {
+		if (this.inspection) return this.inspection;
+		this.inspection = api.get('/ebpf').then(data => this.renderEbpf(data), error => this.renderEbpf(null, error))
+			.finally(() => { this.inspection = null; });
+		return this.inspection;
 	},
 
 	renderEbpf(d, err) {
 		const box = this.els.ebpf;
 		if (!d) {
-			box.replaceChildren(mui.empty(err && err.status === 404 ? '当前 mihomo 不含 eBPF 支持' : '无法读取 eBPF 状态'));
+			box.replaceChildren(mui.empty(err && err.status === 404 ? '请升级支持轻量 eBPF 摘要的内核' : '无法读取 eBPF 状态'));
 			return;
 		}
 		const list = d.inbounds || [];
@@ -237,8 +239,8 @@ return view.extend({
 			mui.row('模式', modeText),
 			mui.row('本机数据面', ib.local_data_plane || '-'),
 			mui.row('局域网数据面', ib.shared_data_plane || '-'),
-			mui.row('eBPF 程序', String((res.programs || []).length) + ' 个'),
-			mui.row('Map', E('span', { 'class': m.cls, title: m.pressured.join('、') }, m.text)),
+			ib.resources ? mui.row('eBPF 程序', String((res.programs || []).length) + ' 个') : '',
+			ib.resources ? mui.row('Map', E('span', { 'class': m.cls, title: m.pressured.join('、') }, m.text)) : mui.row('Map 占用', '按「详细诊断」时读取'),
 			m.busiest ? mui.row('最高占用', m.busiest.name + ' · ' + Math.round(m.busiest.ratio * 100) + '%') : '',
 			mui.row('后台清理', maint ? E('span', { 'class': 'mh-err' }, maint + ' 次失败') : E('span', { 'class': 'mh-ok' }, '正常')),
 			ib.resource_error ? mui.row('错误', E('span', { 'class': 'mh-err' }, ib.resource_error)) : ''
@@ -258,7 +260,7 @@ return view.extend({
 			return E('div', { 'class': 'mh-sub-item' }, [
 				E('div', { 'class': 'mh-sub-top' }, [
 					E('b', { title: s.name }, s.name),
-					E('span', { 'class': s.alive ? '' : 'mh-err' }, s.alive + ' / ' + s.total + ' 可用')
+					E('span', { 'class': s.alive == null || s.alive ? '' : 'mh-err' }, s.alive == null ? s.total + ' 个节点' : s.alive + ' / ' + s.total + ' 可用')
 				]),
 				s.ratio != null ? mui.meter(s.ratio, cls) : '',
 				E('div', { 'class': 'mh-sub-meta' }, [
@@ -273,7 +275,7 @@ return view.extend({
 		const btn = this.els.updateAll;
 		btn.disabled = true;
 		btn.textContent = '更新中…';
-		api.get('/providers/proxies').then(d => {
+		api.get('/overview').then(d => {
 			const names = Object.keys(d.providers || {}).filter(k => d.providers[k].vehicleType === 'HTTP');
 			return Promise.all(names.map(n => api.put('/providers/proxies/' + encodeURIComponent(n)).then(() => null, e => n + '：' + e.message)));
 		}).then(errs => {

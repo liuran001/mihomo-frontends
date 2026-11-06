@@ -74,6 +74,7 @@ import top.yukonga.miuix.kmp.utils.PressFeedbackType
 @Composable
 fun ProxiesPage(onBack: (() -> Unit)?) {
     val state = LiveProxies
+    val columns = (LocalPageWidth.current.value / 235).toInt().coerceIn(2, 5)
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(Unit) { if (state.stale) liveRead("读取代理组中…") { state.load() } }
     Page(title = "代理", navigationIcon = { if (onBack != null) BackIcon(onBack) }, actions = {
@@ -81,6 +82,11 @@ fun ProxiesPage(onBack: (() -> Unit)?) {
     }) {
         banner(if (!liveIdle) liveActivity else "", BannerKind.Progress, "activity")
         banner(state.error.ifEmpty { state.feedback.error }, BannerKind.Error, "error")
+        if (state.groups != null) banner(when {
+            state.loading -> "刷新中 · 显示上次快照"
+            state.stale -> "快照已过期 · 请刷新后操作"
+            else -> ""
+        }, BannerKind.Info, "snapshot")
         val groups = state.groups?.filter { !it.hidden }
         if (groups != null && groups.isEmpty()) item(key = "empty") { EmptyState(MiuixIcons.Regular.Tune, "没有策略组，请先启动服务") }
         for (group in groups.orEmpty()) {
@@ -93,8 +99,8 @@ fun ProxiesPage(onBack: (() -> Unit)?) {
                     Text("该组由内核自动选择，不能手动切换", fontSize = 12.sp, color = Tone.muted,
                         modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 8.dp))
                 }
-                val rows = group.options.chunked(2)
-                items(rows.size, key = { "nodes:${group.key}:$it" }) { index -> ProxyNodeRow(group, rows[index]) }
+                val rows = group.options.chunked(columns)
+                items(rows.size, key = { "nodes:${group.key}:$it" }) { index -> ProxyNodeRow(group, rows[index], columns) }
                 item(key = "gap:${group.key}") { Spacer(Modifier.height(12.dp)) }
             }
         }
@@ -164,10 +170,10 @@ private fun ProxyGroupCard(group: LiveProxyGroup, open: Boolean, onToggle: () ->
 }
 
 @Composable
-private fun ProxyNodeRow(group: LiveProxyGroup, names: List<String>) {
+private fun ProxyNodeRow(group: LiveProxyGroup, names: List<String>, columns: Int) {
     Row(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (name in names) ProxyNodeChip(group, name, Modifier.weight(1f))
-        if (names.size == 1) Spacer(Modifier.weight(1f))
+        repeat(columns - names.size) { Spacer(Modifier.weight(1f)) }
     }
 }
 
@@ -184,9 +190,12 @@ private fun ProxyNodeChip(group: LiveProxyGroup, name: String, modifier: Modifie
             .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(name, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(end = 6.dp),
-            color = if (selected) primary else MiuixTheme.colorScheme.onSurface,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GroupIcon(node?.icon.orEmpty(), name, 28.dp)
+            Text(name, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(end = 6.dp),
+                color = if (selected) primary else MiuixTheme.colorScheme.onSurface,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             val subtitle = when {
                 node == null -> ""
@@ -205,33 +214,45 @@ private class GroupIconState {
     var loaded = false
 }
 
-private val groupIcons = mutableMapOf<String, GroupIconState>()
+private val groupIcons = linkedMapOf<String, GroupIconState>()
 private val groupIconLoads = Semaphore(3)
 
 private fun decodeIcon(uri: String): ImageBitmap? {
     if (!uri.startsWith("data:image/") || !uri.contains(";base64,")) return null
     val bytes = Base64.decode(uri.substringAfter(";base64,"))
     if (uri.startsWith("data:image/svg")) {
-        val dom = org.jetbrains.skia.svg.SVGDOM(org.jetbrains.skia.Data.makeFromBytes(bytes))
-        val size = 96
-        dom.setContainerSize(size.toFloat(), size.toFloat())
-        val surface = org.jetbrains.skia.Surface.makeRasterN32Premul(size, size)
-        dom.render(surface.canvas)
-        return surface.makeImageSnapshot().toComposeImageBitmap()
+        val data = org.jetbrains.skia.Data.makeFromBytes(bytes)
+        try {
+            val dom = org.jetbrains.skia.svg.SVGDOM(data)
+            try {
+                val size = 96
+                dom.setContainerSize(size.toFloat(), size.toFloat())
+                val surface = org.jetbrains.skia.Surface.makeRasterN32Premul(size, size)
+                try {
+                    dom.render(surface.canvas)
+                    return surface.makeImageSnapshot().toComposeImageBitmap()
+                } finally { surface.close() }
+            } finally { dom.close() }
+        } finally { data.close() }
     }
     return org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
 }
 
 @Composable
-private fun GroupIcon(url: String, name: String) {
-    val modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp))
+private fun GroupIcon(url: String, name: String, size: androidx.compose.ui.unit.Dp = 36.dp) {
+    val modifier = Modifier.size(size).clip(RoundedCornerShape(8.dp))
     if (url.isEmpty()) {
         Box(modifier.background(MiuixTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
             Text(name.take(1).ifEmpty { "?" }, color = MiuixTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         }
         return
     }
-    val state = remember(url) { groupIcons.getOrPut(url) { GroupIconState() } }
+    val state = remember(url) {
+        groupIcons.remove(url)?.also { groupIcons[url] = it } ?: GroupIconState().also {
+            groupIcons[url] = it
+            if (groupIcons.size > 96) groupIcons.remove(groupIcons.keys.first())
+        }
+    }
     LaunchedEffect(url) {
         if (state.loaded) return@LaunchedEffect
         groupIconLoads.withPermit {
@@ -261,11 +282,13 @@ fun ConnectionsPage(onBack: () -> Unit) {
     val state = LiveConnections
     var query by remember { mutableStateOf("") }
     var detail by remember { mutableStateOf<LiveConnection?>(null) }
+    var detailVisible by remember { mutableStateOf(false) }
     var confirmAll by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         liveRead("读取连接中…") { state.load() }
         while (true) {
             delay(5000)
+            awaitWebuiVisible()
             if (liveIdle && detail == null) liveRead("") { state.load() }
         }
     }
@@ -282,6 +305,7 @@ fun ConnectionsPage(onBack: () -> Unit) {
         subtitle = state.total?.let { "共 $it 个 · 上传 ${formatBytes(state.upload)} 下载 ${formatBytes(state.download)}" } ?: "",
         navigationIcon = { BackIcon(onBack) },
         actions = {
+            BarAction(MiuixIcons.Regular.Refresh, "刷新连接", enabled = liveIdle) { state.refresh() }
             BarAction(MiuixIcons.Regular.Delete, "断开全部", enabled = state.writable && connections.isNotEmpty()) { confirmAll = true }
         },
     ) {
@@ -292,25 +316,28 @@ fun ConnectionsPage(onBack: () -> Unit) {
         }
         banner(state.error.ifEmpty { state.feedback.error }, BannerKind.Error, "error")
         banner(state.feedback.message, BannerKind.Success, "message")
+        if (state.connections != null) banner(when {
+            state.loading -> "刷新中 · 显示上次快照"
+            state.stale -> "快照已过期 · 请刷新后操作"
+            else -> ""
+        }, BannerKind.Info, "snapshot")
         if (state.connections != null && filtered.isEmpty()) item(key = "empty") { EmptyState(MiuixIcons.Regular.Link, "没有连接") }
-        if (filtered.isNotEmpty()) item(key = "list") {
+        items(filtered, key = { "connection:${it.key}" }) { connection ->
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth()) {
-                for (connection in filtered) {
-                    val value = connection.value
-                    BasicComponent(
-                        title = connectionTitle(value),
-                        summary = listOf(connectionProcess(value), connectionChain(value)).filter { it.isNotEmpty() }.joinToString(" · "),
-                        onClick = { detail = connection },
-                        endActions = { Text("" + formatBytes(value.string("download").toDoubleOrNull()), fontSize = 12.sp, color = Tone.muted) },
-                    )
-                }
+                val value = connection.value
+                BasicComponent(
+                    title = connectionTitle(value),
+                    summary = listOf(connectionProcess(value), connectionChain(value)).filter { it.isNotEmpty() }.joinToString(" · "),
+                    onClick = { detail = connection; detailVisible = true },
+                    endActions = { Text("" + formatBytes(value.string("download").toDoubleOrNull()), fontSize = 12.sp, color = Tone.muted) },
+                )
             }
         }
     }
     ConfirmDialog(show = confirmAll, title = "断开全部连接", summary = "正在进行的下载和通话会被中断。", confirm = "断开", danger = true,
         onDismiss = { confirmAll = false }) { confirmAll = false; state.close() }
     val shown = detail
-    Sheet(show = shown != null, title = "连接详情", onDismissRequest = { detail = null }) {
+    Sheet(show = detailVisible, title = "连接详情", onDismissRequest = { detailVisible = false }, onDismissFinished = { detail = null }) {
         if (shown != null) {
             val value = shown.value
             val metadata = value["metadata"] as? JsonObject
@@ -327,7 +354,7 @@ fun ConnectionsPage(onBack: () -> Unit) {
                     )) if (text.isNotEmpty()) InfoRow(label, text)
                 }
                 Spacer(Modifier.height(12.dp))
-                TextButton("断开此连接", onClick = { state.close(value.string("id")); detail = null }, enabled = state.writable,
+                TextButton("断开此连接", onClick = { detailVisible = false; state.close(value.string("id")) }, enabled = state.writable && value.string("id").isNotBlank(),
                     modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColors(textColor = MiuixTheme.colorScheme.error))
             }
         }

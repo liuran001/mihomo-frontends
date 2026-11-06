@@ -14,3 +14,5 @@ screen.png
 /magisk/webui/node_modules/
 /magisk/webui/*.log
 /magisk/webui/build-log.txt
+/magisk/device-helper/out/
+/magisk/scrcpy-assets/out/

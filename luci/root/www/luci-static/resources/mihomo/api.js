@@ -103,6 +103,10 @@ function setOnline(v) {
 function onState(f) {
 	stateListeners.push(f);
 	if (online !== null) f(online);
+	return () => {
+		const index = stateListeners.indexOf(f);
+		if (index >= 0) stateListeners.splice(index, 1);
+	};
 }
 
 function controller(force) {
@@ -138,7 +142,6 @@ function request(method, path, body, opts) {
 		const timer = setTimeout(() => abort.abort(), opts.timeout || 10000);
 		init.signal = abort.signal;
 		return fetch(c.base + path, init).then(r => {
-			clearTimeout(timer);
 			setOnline(true);
 			if (r.status === 204) return null;
 			return r.text().then(txt => {
@@ -151,51 +154,121 @@ function request(method, path, body, opts) {
 				}
 				return data;
 			});
-		}, e => {
-			clearTimeout(timer);
+		}).catch(e => {
 			if (e.name === 'AbortError') throw new Error('请求超时');
+			if (e.status) throw e;
 			setOnline(false);
 			throw new Error('无法连接 mihomo 控制器');
-		});
+		}).finally(() => clearTimeout(timer));
 	});
 }
 
-// WebSocket 流：断开后每 3 秒重连。返回 { close() }。
-function stream(path, onMessage) {
-	let ws = null, closed = false, timer = null;
-	const retry = () => { if (!closed) timer = setTimeout(open, 3000); };
+function observeView(root, activate, deactivate) {
+	let active = false, attached = false, closed = false;
+	const observer = root ? new MutationObserver(refresh) : null;
+	function close() {
+		if (closed) return;
+		closed = true;
+		if (observer) observer.disconnect();
+		document.removeEventListener('visibilitychange', refresh);
+		window.removeEventListener('pagehide', suspend);
+		window.removeEventListener('pageshow', refresh);
+		if (active) { active = false; deactivate(); }
+	}
+	function suspend() {
+		if (active) { active = false; deactivate(); }
+	}
+	function refresh() {
+		if (closed) return;
+		const connected = !root || document.body.contains(root);
+		if (attached && !connected) return close();
+		attached = attached || connected;
+		const visible = connected && !document.hidden;
+		if (visible === active) return;
+		active = visible;
+		if (active) activate(); else deactivate();
+	}
+	if (observer) observer.observe(document.body, { childList: true, subtree: true });
+	document.addEventListener('visibilitychange', refresh);
+	window.addEventListener('pagehide', suspend);
+	window.addEventListener('pageshow', refresh);
+	refresh();
+	return close;
+}
+
+function poll(root, interval, callback, immediate = true) {
+	let active = false, pending = null, timer = null;
+	function run() {
+		timer = null;
+		if (!active || pending) return;
+		pending = Promise.resolve().then(() => active ? callback() : null).catch(() => null).finally(() => {
+			pending = null;
+			if (active) timer = setTimeout(run, interval);
+		});
+	}
+	const close = observeView(root, () => {
+		active = true;
+		if (immediate) run(); else if (!pending) timer = setTimeout(run, interval);
+	}, () => {
+		active = false;
+		clearTimeout(timer);
+		timer = null;
+	});
+	return { close };
+}
+
+function stream(path, onMessage, root) {
+	let socket = null, active = false, opening = false, timer = null, generation = 0;
+	const retry = () => {
+		clearTimeout(timer);
+		if (active) timer = setTimeout(open, 3000);
+	};
+	function suspend() {
+		active = false;
+		generation++;
+		clearTimeout(timer);
+		timer = null;
+		if (socket) {
+			socket.onopen = socket.onmessage = socket.onclose = null;
+			socket.close();
+			socket = null;
+		}
+	}
 	function open() {
+		if (!active || socket || opening) return;
+		opening = true;
+		const current = generation;
 		controller().then(c => {
-			if (closed) return;
+			if (!active || current !== generation) return;
 			if (!c.base) return retry();
-			ws = new WebSocket(c.base.replace(/^http/, 'ws') + withToken(path, c.secret));
-			ws.onopen = () => setOnline(true);
-			ws.onmessage = ev => {
+			const client = new WebSocket(c.base.replace(/^http/, 'ws') + withToken(path, c.secret));
+			socket = client;
+			client.onopen = () => setOnline(true);
+			client.onmessage = ev => {
+				if (document.hidden || (root && !document.body.contains(root))) return;
 				let d;
 				try { d = JSON.parse(ev.data); } catch (e) { return; }
 				onMessage(d);
 			};
-			ws.onclose = () => {
-				ws = null;
-				if (closed) return;
+			client.onclose = () => {
+				if (socket !== client) return;
+				socket = null;
+				if (!active) return;
 				setOnline(false);
 				retry();
 			};
+		}).catch(() => { if (current === generation) retry(); }).finally(() => {
+			opening = false;
+			if (active && current !== generation) open();
 		});
 	}
-	open();
-	return {
-		close() {
-			closed = true;
-			clearTimeout(timer);
-			if (ws) ws.close();
-		}
-	};
+	const close = observeView(root, () => { active = true; open(); }, suspend);
+	return { close };
 }
 
 return baseclass.extend({
 	rpc: rpcs,
-	baseUrl, withToken, dashboardUrl, controller, request, stream, onState,
+	baseUrl, withToken, dashboardUrl, controller, request, stream, poll, onState,
 	setupApply, setupRender, coreSettings,
 	// 面板链接 { url, reason }
 	dashboard: () => controller().then(c => dashboardUrl(c.raw, location.hostname)),

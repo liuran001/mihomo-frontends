@@ -14,7 +14,32 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
+
+var configUpdateAccess sync.Mutex
+
+func updateConfig(path string, update func(*Config) error) error {
+	configUpdateAccess.Lock()
+	defer configUpdateAccess.Unlock()
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := lockConfigFile(lock); err != nil {
+		return err
+	}
+	defer unlockConfigFile(lock)
+	config, err := loadConfig(path)
+	if err != nil {
+		return err
+	}
+	if err := update(&config); err != nil {
+		return err
+	}
+	return saveConfig(path, config)
+}
 
 // Config 是 webui.json：网页管理的全部设置。密码只存 PBKDF2-SHA256 派生值。
 type Config struct {
@@ -31,15 +56,23 @@ type Config struct {
 	// TailscaleNoPassword 为 true 时带 Tailnet 身份的请求免密
 	TailscaleNoPassword bool `json:"tailscale_no_password"`
 	// TailscaleUsers 为空时允许 Tailnet 中的任何账号，否则只允许列出的登录名
-	TailscaleUsers []string `json:"tailscale_users"`
-	SessionHours   int      `json:"session_hours"`
-	Password       *Hash    `json:"password,omitempty"`
+	TailscaleUsers []string       `json:"tailscale_users"`
+	SessionHours   int            `json:"session_hours"`
+	Password       *Hash          `json:"password,omitempty"`
+	Enhanced       EnhancedConfig `json:"enhanced"`
 }
 
 type Hash struct {
 	Salt       string `json:"salt"`
 	Key        string `json:"key"`
 	Iterations int    `json:"iterations"`
+}
+
+func passwordConfigID(config Config) string {
+	if config.Password == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s:%s", config.Password.Iterations, config.Password.Salt, config.Password.Key)
 }
 
 const (
@@ -72,7 +105,7 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return config, err
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := decodeStrict(strings.NewReader(string(data)), &config); err != nil {
 		return defaultConfig(), fmt.Errorf("webui.json 无效：%w", err)
 	}
 	if err := config.validate(); err != nil {
@@ -136,10 +169,13 @@ func (c *Config) validate() error {
 			return fmt.Errorf("Tailnet 账号 %q 无效", user)
 		}
 	}
-	if c.Password != nil && (c.Password.Iterations < 1000 || c.Password.Salt == "" || c.Password.Key == "") {
+	if c.Password != nil && !c.Password.valid() {
 		return errors.New("密码数据无效")
 	}
-	return nil
+	if c.Enhanced.Scrcpy && c.Enhanced.ScrcpyPort == c.Port {
+		return errors.New("web scrcpy 端口不能等于网页管理端口")
+	}
+	return c.Enhanced.validate(c.Password != nil, c.RequirePassword)
 }
 
 // parsePrefix 接受 CIDR 或单个地址（视为 /32、/128）。
@@ -209,19 +245,25 @@ func hashPassword(password string) (*Hash, error) {
 	return &Hash{Salt: base64.StdEncoding.EncodeToString(salt), Key: base64.StdEncoding.EncodeToString(key), Iterations: defaultIterations}, nil
 }
 
-func (h *Hash) verify(password string) bool {
-	if h == nil {
+func (h *Hash) valid() bool {
+	if h == nil || h.Iterations < 1000 || h.Iterations > 1000000 || len(h.Salt) != 24 || len(h.Key) != 44 {
 		return false
 	}
 	salt, err := base64.StdEncoding.DecodeString(h.Salt)
-	if err != nil {
+	if err != nil || len(salt) != 16 {
 		return false
 	}
 	want, err := base64.StdEncoding.DecodeString(h.Key)
-	if err != nil {
+	return err == nil && len(want) == 32
+}
+
+func (h *Hash) verify(password string) bool {
+	if !h.valid() || len(password) > 256 {
 		return false
 	}
-	key, err := pbkdf2.Key(sha256.New, password, salt, h.Iterations, len(want))
+	salt, _ := base64.StdEncoding.DecodeString(h.Salt)
+	want, _ := base64.StdEncoding.DecodeString(h.Key)
+	key, err := pbkdf2.Key(sha256.New, password, salt, h.Iterations, 32)
 	if err != nil {
 		return false
 	}
@@ -235,5 +277,6 @@ func publicConfig(c Config) map[string]any {
 		"require_password": c.RequirePassword, "tailscale": c.Tailscale,
 		"tailscale_no_password": c.TailscaleNoPassword, "tailscale_users": c.TailscaleUsers,
 		"session_hours": c.SessionHours, "has_password": c.Password != nil,
+		"enhanced": c.Enhanced.public(), "public_access": c.publicAccess(),
 	}
 }

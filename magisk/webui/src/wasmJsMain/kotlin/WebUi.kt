@@ -49,6 +49,9 @@ internal data class WebUiSettings(
     val tailscaleUsers: List<String> = emptyList(),
     val sessionHours: Int = 168,
     val hasPassword: Boolean = false,
+    val enhanced: Boolean = false,
+    val operationPassword: Boolean = false,
+    val publicAccess: Boolean = false,
 )
 
 private fun JsonObject.strings(key: String): List<String> =
@@ -61,6 +64,9 @@ private fun JsonObject.webUiSettings(): WebUiSettings = WebUiSettings(
     requirePassword = boolean("require_password", true), tailscale = boolean("tailscale"),
     tailscaleNoPassword = boolean("tailscale_no_password"), tailscaleUsers = strings("tailscale_users"),
     sessionHours = int("session_hours", 168), hasPassword = boolean("has_password"),
+    enhanced = (this["enhanced"] as? JsonObject)?.boolean("enabled") == true,
+    operationPassword = (this["enhanced"] as? JsonObject)?.boolean("has_password") == true,
+    publicAccess = boolean("public_access"),
 )
 
 private fun strings(values: List<String>): JsonArray = JsonArray(values.map { JsonPrimitive(it) })
@@ -80,15 +86,32 @@ internal object WebUiState {
     var remote by mutableStateOf(false)
     var via by mutableStateOf("")
     var login by mutableStateOf("")
+    var sessionError by mutableStateOf("")
+    var sessionLoaded by mutableStateOf(false)
+    private var sessionLoading = false
 
     fun load() {
-        run("读取设置…") {
-            refresh()
-            TailscaleState.load(force = true)
-            val session = request("webuiSession")
-            remote = session.boolean("remote")
-            via = session.string("via")
-            login = session.string("login")
+        if (busy.isNotEmpty()) return
+        run("读取设置…") { refresh() }
+        TailscaleState.load(force = true)
+        if (!sessionLoading) {
+            sessionLoading = true
+            sessionError = ""
+            scope.launch {
+                try {
+                    val session = request("webuiSession")
+                    remote = session.boolean("remote")
+                    via = session.string("via")
+                    login = session.string("login")
+                    sessionLoaded = true
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    sessionError = failure.message ?: "无法读取当前会话"
+                } finally {
+                    sessionLoading = false
+                }
+            }
         }
     }
 
@@ -185,6 +208,15 @@ internal object WebUiState {
             request("webuiPasswd", json("password" to password))
             refresh()
             notice = if (password.isEmpty()) "已清除密码" else "已设置密码；已登录的浏览器需要重新登录"
+        }
+    }
+
+    fun setEnhanced(values: JsonObject) {
+        notice = ""
+        run("保存增强设置…") {
+            check(sessionLoaded && !remote) { "请在本机模块 WebUI 中修改增强设置" }
+            accept(request("enhancedSet", json("settings" to values)))
+            notice = "增强设置已保存"
         }
     }
 
@@ -289,15 +321,20 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     var editPassword by remember { mutableStateOf(false) }
     var clearPassword by remember { mutableStateOf(false) }
     var confirmDisable by remember { mutableStateOf(false) }
+    var confirmEnhanced by remember { mutableStateOf(false) }
+    var editOperationPassword by remember { mutableStateOf(false) }
+    var clearOperationPassword by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { state.load() }
-    val idle = state.busy.isEmpty() && ts.busy.isEmpty()
+    val idle = state.busy.isEmpty()
+    val tailscaleIdle = idle && ts.busy.isEmpty()
     // 开关在保存期间仍可操作；端口、密码等弹窗类操作等保存完成
     val quiet = idle && state.pending == 0
     Page(title = "网页管理", navigationIcon = { BackIcon(onBack) }, actions = {
         BarAction(MiuixIcons.Regular.Refresh, "重新读取", enabled = idle) { state.load() }
     }) {
-        banner(state.busy.ifEmpty { ts.busy }.ifEmpty { if (state.pending > 0) "保存中…" else "" }, BannerKind.Progress, "busy")
-        banner(state.error.ifEmpty { ts.error }, BannerKind.Error, "error")
+        banner(state.busy.ifEmpty { if (state.pending > 0) "保存中…" else "" }, BannerKind.Progress, "busy")
+        banner(state.error, BannerKind.Error, "error")
+        banner(state.sessionError, BannerKind.Error, "session-error")
         banner(state.notice, BannerKind.Success, "notice")
         if (!state.loaded) return@Page
         if (!state.installed) {
@@ -327,10 +364,28 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 value = if (current.hasPassword) "已设置" else "未设置", enabled = quiet) { editPassword = true }
             if (current.hasPassword) ArrowRow("清除密码", "清除后本机与局域网免密访问；Tailnet 只能用账号免密访问", enabled = quiet) { clearPassword = true }
             SwitchRow("本机和局域网访问需要密码", current.requirePassword && current.hasPassword,
-                if (current.hasPassword) "关闭后本机应用和同一网络里的设备都能直接管理" else "设置密码后才能开启", enabled = idle && current.hasPassword) {
+                if (current.enhanced) "增强功能启用期间必须保留密码访问" else if (current.hasPassword) "关闭后本机应用和同一网络里的设备都能直接管理" else "设置密码后才能开启", enabled = idle && current.hasPassword && !current.enhanced) {
                 state.set("require_password", JsonPrimitive(it))
             }
             ArrowRow("登录有效期", "超过后需要重新输入密码", value = "${current.sessionHours} 小时", enabled = quiet) { editHours = true }
+        }
+        group("增强功能", "enhanced") {
+            SwitchRow("启用增强功能", current.enhanced,
+                when {
+                    !state.sessionLoaded -> "正在确认访问方式"
+                    state.remote -> "只能在手机的模块管理器 WebUI 中开启或关闭"
+                    !current.hasPassword -> "请先设置主 WebUI 登录密码"
+                    else -> "短信、电量、热点、终端和 web scrcpy；开启后强制主密码访问"
+                }, enabled = quiet && state.sessionLoaded && !state.remote && (current.hasPassword || current.enhanced)) {
+                if (it) confirmEnhanced = true else state.setEnhanced(json("enabled" to false))
+            }
+            if (current.publicAccess) Caption("当前允许公网来源访问。强烈建议仅在局域网或 Tailscale 开启增强功能；终端和屏幕控制拥有本机管理权限。", Tone.warning)
+            if (current.enhanced) {
+                ArrowRow("操作密码", if (current.operationPassword) "解锁后 15 分钟失效；修改后立即使旧操作会话失效" else "未设置时使用已验证的主 WebUI 会话",
+                    value = if (current.operationPassword) "独立密码" else "使用主密码", enabled = quiet && state.sessionLoaded && !state.remote) { editOperationPassword = true }
+                if (current.operationPassword) ArrowRow("清除操作密码", "仍然必须通过主 WebUI 密码登录", enabled = quiet && state.sessionLoaded && !state.remote) { clearOperationPassword = true }
+                ArrowRow("打开设备控制", "查看设备信息、短信与终端") { onNavigate("enhanced") }
+            }
         }
         group("局域网", "lan") {
             SwitchRow("允许局域网访问", current.lan, "关闭时只监听本机 127.0.0.1", enabled = idle) {
@@ -360,24 +415,26 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
             }
         }
         group("Tailscale", "tailscale") {
+            if (ts.busy.isNotEmpty()) Caption(ts.busy)
+            if (ts.error.isNotEmpty()) Caption(ts.error, Tone.warning)
             val published = ts.entries.firstOrNull { it.webui }
             val target = published ?: ts.entries.firstOrNull { it.loggedIn } ?: ts.entries.firstOrNull()
             SwitchRow("允许 Tailnet 访问", current.tailscale && published != null,
                 if (target == null) "需要先添加 Tailscale 出站" else "经 ${target.name} 发布到本机的 Tailnet 地址，会重启内核",
-                enabled = idle && target != null) { state.setTailscale(it, target?.name) }
+                enabled = tailscaleIdle && ts.error.isEmpty() && target != null) { state.setTailscale(it, target?.name) }
             if (target == null) {
-                ArrowRow("添加 Tailscale", enabled = idle) { onNavigate("tailscale") }
+                ArrowRow("添加 Tailscale", enabled = tailscaleIdle) { onNavigate("tailscale") }
             } else if (current.tailscale) {
                 val host = target.fields.firstOrNull { it.id == "hostname" }?.let { fieldText(it.value) }.orEmpty()
                 if (host.isNotEmpty()) InfoRow("访问地址", "http://$host/")
                 if (!target.loggedIn) Caption("${target.name} 还没有登录 Tailscale，登录后才能从 Tailnet 访问", Tone.warning)
                 SwitchRow("Tailnet 账号免密", current.tailscaleNoPassword,
-                    "按 Tailscale 身份直接登录；带标签的设备（tagged）没有账号身份，仍需要密码", enabled = idle) {
+                    "按 Tailscale 身份直接登录；带标签的设备（tagged）没有账号身份，仍需要密码", enabled = tailscaleIdle) {
                     state.set("tailscale_no_password", JsonPrimitive(it))
                 }
                 ArrowRow("允许的账号", "只允许这些 Tailscale 登录名访问",
                     value = if (current.tailscaleUsers.isEmpty()) "Tailnet 里的所有账号" else current.tailscaleUsers.joinToString("、"),
-                    enabled = idle) { editUsers = true }
+                    enabled = tailscaleIdle) { editUsers = true }
             }
         }
         item(key = "note") {
@@ -429,6 +486,22 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         editPassword = false
         state.setPassword(password)
     }
+    PasswordDialog(editOperationPassword, title = "设置独立操作密码", onDismiss = { editOperationPassword = false }) { password ->
+        editOperationPassword = false
+        state.setEnhanced(json("password" to password))
+    }
+    ConfirmDialog(show = confirmEnhanced, title = "开启增强功能",
+        summary = "将允许已鉴权的浏览器读取短信、管理热点、执行 root 终端命令和控制屏幕。强烈建议仅在局域网或 Tailscale 使用。" +
+            if (current.publicAccess) "当前允许公网访问，请先检查允许的网段。" else "可设置独立操作密码。",
+        confirm = "开启", danger = true, onDismiss = { confirmEnhanced = false }) {
+        confirmEnhanced = false
+        state.setEnhanced(json("enabled" to true))
+    }
+    ConfirmDialog(show = clearOperationPassword, title = "清除操作密码", summary = "设备控制将仅要求主 WebUI 密码登录。",
+        confirm = "清除", danger = true, onDismiss = { clearOperationPassword = false }) {
+        clearOperationPassword = false
+        state.setEnhanced(json("password" to ""))
+    }
     ConfirmDialog(show = confirmDisable, title = "停止网页管理",
         summary = "当前页面正是经网页管理打开的，停止后会立即断开，之后只能在手机上的管理器里重新开启。",
         confirm = "停止", danger = true, onDismiss = { confirmDisable = false }) {
@@ -436,7 +509,7 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         state.setEnabled(false)
     }
     ConfirmDialog(show = clearPassword, title = "清除密码",
-        summary = "清除后本机应用${if (current.lan) "和局域网设备" else ""}无需密码即可管理；" +
+        summary = (if (current.enhanced) "同时关闭增强功能和 web scrcpy 入口。" else "") + "清除后本机应用${if (current.lan) "和局域网设备" else ""}无需密码即可管理；" +
             if (current.tailscale && !current.tailscaleNoPassword) "Tailnet 设备将无法登录，直到重新设置密码。" else "建议只在可信环境下这样用。",
         confirm = "清除", danger = true, onDismiss = { clearPassword = false }) {
         clearPassword = false
@@ -450,11 +523,11 @@ private fun SmallTitleText(text: String) {
 }
 
 @Composable
-private fun PasswordDialog(show: Boolean, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+internal fun PasswordDialog(show: Boolean, title: String = "设置登录密码", onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var first by remember(show) { mutableStateOf("") }
     var second by remember(show) { mutableStateOf("") }
     var error by remember(show) { mutableStateOf("") }
-    Dialog(show = show, title = "设置登录密码", summary = "6–256 个字符", onDismissRequest = onDismiss) {
+    Dialog(show = show, title = title, summary = "6–256 个字符", onDismissRequest = onDismiss) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             PasswordField("新密码", first) { first = it; error = "" }
             PasswordField("再输入一次", second) { second = it; error = "" }
@@ -474,7 +547,7 @@ private fun PasswordDialog(show: Boolean, onDismiss: () -> Unit, onSave: (String
 }
 
 @Composable
-private fun PasswordField(label: String, value: String, onChange: (String) -> Unit) {
+internal fun PasswordField(label: String, value: String, onChange: (String) -> Unit) {
     top.yukonga.miuix.kmp.basic.TextField(
         value = value,
         onValueChange = onChange,

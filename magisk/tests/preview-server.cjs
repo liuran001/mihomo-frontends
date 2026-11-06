@@ -34,17 +34,33 @@ function mockBackend() {
   const many = Array.from({ length: 120 }, (_, i) => '节点 ' + String(i + 1).padStart(3, '0'));
   const groups = [
     { name: '节点选择', type: 'Selector', now: '香港 01', icon: svgIcon, all: ['自动选择', '香港 01', '香港 02', '日本 01', '美国 01', 'DIRECT'] },
-    { name: '自动选择', type: 'URLTest', now: '香港 02', icon: 'https://example.invalid/auto.png', all: ['香港 01', '香港 02', '日本 01', '美国 01'] },
+    { name: '自动选择', type: 'URLTest', now: '香港 02', icon: svgIcon, all: ['香港 01', '香港 02', '日本 01', '美国 01'] },
     { name: '全部节点', type: 'Selector', now: many[3], all: many },
     { name: '隐藏组', type: 'Selector', now: 'DIRECT', hidden: true, all: ['DIRECT'] },
   ];
   const delays = { '香港 01': 82, '香港 02': 64, '日本 01': 121, '美国 01': 233, DIRECT: 6 };
   many.forEach((name, i) => { delays[name] = i % 9 === 0 ? 0 : 60 + (i * 37) % 900; });
   const webui = { enabled: false, port: 9099, lan: false, allow_cidrs: [], require_password: true, tailscale: false,
-    tailscale_no_password: false, tailscale_users: [], session_hours: 168, has_password: false };
+    tailscale_no_password: false, tailscale_users: [], session_hours: 168, has_password: false,
+    enhanced: { enabled: false, has_password: false, scrcpy: false, scrcpy_port: 8080,
+      scrcpy_mode: 'builtin', scrcpy_max_size: 1280, scrcpy_fps: 24, scrcpy_bit_rate: 2000000 } };
+  const previewMode = new URLSearchParams(location.search);
+  const remote = previewMode.has('remote');
+  let operationPassword = 'operation-password';
+  let operationUnlocked = false;
+  let screenRunning = false;
+  let hotspot = { ok: true, enabled: false, tethered: false, configured: false, ssid: '', band: '2' };
+  if (previewMode.has('enhanced')) {
+    webui.enabled = true;
+    webui.has_password = true;
+    webui.enhanced.enabled = true;
+    webui.enhanced.has_password = true;
+  }
+  window.__previewCalls = [];
   const tsLogged = {};
   window.mihomoBridge = { request: async (operation, raw = '{}') => {
     const payload = JSON.parse(raw);
+    window.__previewCalls.push({ operation, payload });
     await sleep(60);
     let result = { ok: true };
     try {
@@ -52,6 +68,7 @@ function mockBackend() {
       case 'onboardingState': result = { ok: true, has_config: !!config, completed }; break;
       case 'onboardingComplete': completed = true; break;
       case 'policyGet': result = policy; break;
+      case 'policySsid': result = { ok: true, current_ssid: policy.current_ssid }; break;
       case 'policySet': Object.assign(policy, payload); break;
       case 'apps': result = { ok: true, apps }; break;
       case 'appIcon': result = { ok: true, icon: null }; break;
@@ -77,10 +94,15 @@ function mockBackend() {
       case 'configAnalyze': result = window.mihomoConfig.analyze(payload.content); break;
       case 'configPatch': result = window.mihomoConfig.patch(payload.content, payload.ops); break;
       case 'configOptimize': result = window.mihomoConfig.optimize(payload.content, payload.host || {}, { skip: payload.skip || [] }); break;
-      case 'tailscaleStatus': result = { ok: true, list: window.mihomoConfig.schema(config).tailscale.map((item) => ({
+      case 'tailscaleRead':
+      case 'tailscaleStatus': {
+        const schema = window.mihomoConfig.tailscale(config);
+        result = { ...(operation === 'tailscaleRead' ? { ...schema, content: config } : {}), ok: true, list: schema.tailscale.map((item) => ({
         name: item.name, stateDir: '/data/adb/mihomo/tailscale', authKey: item.used, loggedIn: !!tsLogged[item.name],
         login: tsLogged[item.name] ? 'user@example.com' : null, tailnet: tsLogged[item.name] ? 'example.ts.net' : null,
-        magicDns: tsLogged[item.name] ? 'tail0000.ts.net' : null })) }; break;
+        magicDns: tsLogged[item.name] ? 'tail0000.ts.net' : null })) };
+        break;
+      }
       case 'tailscaleLogin': await sleep(1500); setTimeout(() => { tsLogged[payload.name] = true; }, 8000);
         result = { ok: true, url: 'https://login.tailscale.com/a/1a2b3c4d5e6f70' }; break;
       case 'tailscaleLogout': delete tsLogged[payload.name]; break;
@@ -90,8 +112,60 @@ function mockBackend() {
         addrs: [{ iface: 'wlan0', addr: '192.168.1.23' }, { iface: 'tailscale0', addr: '100.64.0.2' }] } }; break;
       case 'webuiSet': Object.assign(webui, payload.settings); result = { ok: true, installed: true, running: webui.enabled, settings: { ok: true, ...webui,
         addrs: [{ iface: 'wlan0', addr: '192.168.1.23' }] } }; break;
-      case 'webuiPasswd': webui.has_password = !!payload.password; break;
-      case 'webuiSession': result = { ok: true, remote: false }; break;
+      case 'webuiPasswd':
+        webui.has_password = !!payload.password;
+        if (!webui.has_password) { webui.enhanced.enabled = false; webui.enhanced.scrcpy = false; }
+        break;
+      case 'webuiSession': result = { ok: true, remote, via: remote ? 'lan' : 'local', passwordless: false }; break;
+      case 'enhancedSet': {
+        if (remote) throw new Error('增强功能设置只能在本机模块 WebUI 修改');
+        if (payload.settings.enabled && !webui.has_password) throw new Error('请先设置主 WebUI 密码');
+        const patch = { ...payload.settings };
+        if ('password' in patch) { operationPassword = patch.password; patch.has_password = !!patch.password; delete patch.password; }
+        Object.assign(webui.enhanced, patch);
+        if (webui.enhanced.enabled) { webui.enabled = true; webui.require_password = true; }
+        else webui.enhanced.scrcpy = false;
+        operationUnlocked = false;
+        result = { ok: true, installed: true, running: webui.enabled, settings: { ...webui, addrs: [] } };
+        break;
+      }
+      case 'enhanced': {
+        const body = payload.payload || {};
+        if (payload.action === 'status') {
+          result = { ok: true, ...webui.enhanced, unlocked: webui.enhanced.enabled && (!webui.enhanced.has_password || operationUnlocked),
+            can_configure: !remote, requires_main: false, public_access: previewMode.has('public'),
+            screen_service: { installed: true, version: '5.0.1', running: screenRunning, last_error: '' } };
+          break;
+        }
+        if (!webui.enhanced.enabled) throw new Error('请先在本机启用增强功能');
+        if (payload.action === 'unlock') {
+          if (webui.enhanced.has_password && body.password !== operationPassword) throw new Error('操作密码错误');
+          operationUnlocked = true;
+          break;
+        }
+        if (webui.enhanced.has_password && !operationUnlocked) throw new Error('增强功能已锁定，请输入操作密码');
+        switch (payload.action) {
+          case 'lock': operationUnlocked = false; break;
+          case 'battery': result = { ok: true, percent: 73, powered: true, temperature: 32 }; break;
+          case 'sms': result = { ok: true, messages: [{ id: '1', address: 'QA-SENDER', body: 'QA-SMS-NOT-A-REAL-MESSAGE', date: '1793880000000', type: '1' }] }; break;
+          case 'hotspot': result = hotspot; break;
+          case 'hotspot-set':
+            if (body.config) hotspot = { ...hotspot, configured: true, ssid: body.config.ssid, band: body.config.band };
+            if ('enabled' in body) hotspot = { ...hotspot, enabled: body.enabled, tethered: body.enabled };
+            result = hotspot;
+            break;
+          case 'terminal': result = { ok: true, errno: 0, stdout: 'QA-TERMINAL-RESULT', stderr: '', truncated: false }; break;
+          case 'scrcpy-set':
+            if ('enabled' in body) webui.enhanced.scrcpy = body.enabled;
+            for (const key of ['port', 'mode', 'max_size', 'fps', 'bit_rate']) if (key in body) webui.enhanced['scrcpy_' + key] = body[key];
+            screenRunning = false;
+            break;
+          case 'scrcpy-stop': screenRunning = false; break;
+          default: throw new Error('未知预览设备操作');
+        }
+        break;
+      }
+      case 'scrcpyUrl': result = { ok: true, url: location.origin + '/enhanced/scrcpy/' }; break;
       case 'dashboard': result = { ok: true, available: true, url: 'http://127.0.0.1:9090/ui/#/setup?hostname=127.0.0.1&port=9090' }; break;
       case 'qrCode': {
         const code = window.qrcode(0, 'M');
@@ -132,6 +206,10 @@ function mockBackend() {
           { id: '2', chains: ['DIRECT'], rule: 'GeoIP', rulePayload: 'CN', upload: 512, download: 4096,
             start: new Date(Date.now() - 8000).toISOString(), metadata: { host: 'api.bilibili.com', network: 'tcp', destinationPort: '443', process: 'tv.danmaku.bili' } },
         ] } };
+        else if (p === '/connections/summary') result = { ok: true, data: { uploadTotal: 41943040 + Date.now() % 1000000, downloadTotal: 734003200 + Date.now() % 10000000, connectionCount: 2, memory: 47448064 } };
+        else if (p === '/overview') result = { ok: true, data: { exit: { chain: ['节点选择', '自动选择', '香港 02'], smart: false }, providers: { sample: { name: '示例订阅', vehicleType: 'HTTP', count: 6, updatedAt: new Date().toISOString(), subscriptionInfo: { Upload: 41943040, Download: 734003200, Total: 107374182400, Expire: 0 } } } } };
+        else if (p === '/ebpf/summary') result = { ok: true, data: { inbounds: [{ id: 1, mode: 'hybrid', local_data_plane: 'cgroup', shared_data_plane: 'packet_rewrite', maintenance: [] }] } };
+        else if (p === '/ebpf') result = { ok: true, data: { inbounds: [{ id: 1, mode: 'hybrid', resources: { programs: [{ id: 1 }], maps: { status: 'pass', maps: [] } } }] } };
         else if (p === '/traffic') result = { ok: true, data: { up: 12000 + Math.round(Math.random() * 9000), down: 260000 + Math.round(Math.random() * 90000) } };
         else if (p === '/memory') result = { ok: true, data: { inuse: 47448064 } };
         else result = { ok: true, data: { version: 'alpha-smart-e272b9d' } };

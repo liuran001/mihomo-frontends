@@ -22,6 +22,9 @@ jobs:
           java-version: '17'
       - name: 配置 Gradle 缓存与 Wrapper 校验
         uses: gradle/actions/setup-gradle@v6
+      - uses: android-actions/setup-android@v3
+      - name: 安装按需设备桥接编译依赖
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - name: 安装 Go
         uses: actions/setup-go@v5
         with:
@@ -31,11 +34,12 @@ jobs:
         run: go vet ./... && go test ./...
       - name: Magisk 回归测试
         run: |
-          node --test magisk/tests/frontend.test.js magisk/tests/bridge.test.js magisk/tests/onboarding.test.js magisk/tests/config.test.js
+          node --test magisk/tests/frontend.test.js magisk/tests/bridge.test.js magisk/tests/onboarding.test.js magisk/tests/config.test.js magisk/tests/login.test.js magisk/tests/screen.test.js
           sh magisk/tests/core.test.sh
           sh magisk/tests/backend.sh
           sh magisk/tests/backend-process.sh
           sh magisk/tests/backend-readiness.sh
+          sh magisk/tests/backend-status.sh
           sh magisk/tests/tailscale.sh
           sh magisk/tests/host-webui.sh
       - name: 构建 Compose Miuix Wasm WebUI

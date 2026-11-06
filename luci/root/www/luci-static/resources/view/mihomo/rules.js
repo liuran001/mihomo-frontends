@@ -199,10 +199,8 @@ return view.extend({
 
 		const root = E('div', { 'class': 'mh' }, [ header.render(), probe, list, sets ]);
 		this.reload();
-		this.timer = setInterval(() => {
-			if (!document.body.contains(root)) return clearInterval(this.timer);
-			if (!document.hidden) this.loadRuntime();
-		}, 15000);
+		if (this.poller) this.poller.close();
+		this.poller = api.poll(root, 15000, () => this.loadRuntime(), false);
 		return root;
 	},
 

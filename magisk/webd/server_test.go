@@ -311,6 +311,17 @@ func TestStaticCompressionAndCaching(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.server.webroot, name), wasm, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	var compressed bytes.Buffer
+	compressor := gzip.NewWriter(&compressed)
+	if _, err := compressor.Write(wasm); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.server.webroot, name+".gz"), compressed.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	response := f.do(local(), "GET", "/"+name, "", map[string]string{"Accept-Encoding": "gzip, br"})
 	if response.Code != http.StatusOK || response.Header().Get("Content-Encoding") != "gzip" {
 		t.Fatalf("gzip response: %d %q", response.Code, response.Header().Get("Content-Encoding"))
@@ -332,5 +343,16 @@ func TestStaticCompressionAndCaching(t *testing.T) {
 	index := f.do(local(), "GET", "/", "", nil)
 	if index.Header().Get("Content-Encoding") != "" || index.Header().Get("Cache-Control") != "no-cache" {
 		t.Fatalf("index without gzip: %q %q", index.Header().Get("Content-Encoding"), index.Header().Get("Cache-Control"))
+	}
+	for _, encoding := range []string{"gzip;q=0", "gzip;q=invalid", "notgzip", "br"} {
+		response := f.do(local(), "GET", "/"+name, "", map[string]string{"Accept-Encoding": encoding})
+		if response.Header().Get("Content-Encoding") != "" || !bytes.Equal(response.Body.Bytes(), wasm) {
+			t.Fatalf("unexpected compression for %q", encoding)
+		}
+	}
+	bumpTime(t, filepath.Join(f.server.webroot, name))
+	response = f.do(local(), "GET", "/"+name, "", map[string]string{"Accept-Encoding": "gzip"})
+	if response.Header().Get("Content-Encoding") != "" || !bytes.Equal(response.Body.Bytes(), wasm) {
+		t.Fatal("stale precompressed asset must use the original file without runtime compression")
 	}
 }

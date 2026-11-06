@@ -98,6 +98,16 @@ if ($wasmFiles.Count -eq 0 -or (@($wasmFiles | Where-Object { $_.Length -eq 0 })
 $webdRoot = Join-Path $moduleRoot 'webd'
 $webdOut = Join-Path $webdRoot 'out'
 $webdFiles = @()
+$webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $webdRoot 'THIRD-PARTY-NOTICES.txt')); Entry = 'bin/WEBD-NOTICES.txt' }
+$screenAssets = Join-Path $moduleRoot 'scrcpy-assets/out'
+Push-Location -LiteralPath $webdRoot
+try {
+    & go run . assets -data $screenAssets
+    if ($LASTEXITCODE -ne 0) { throw '内置屏幕资源下载或校验失败' }
+} finally { Pop-Location }
+foreach ($name in @('scrcpy-server-v5.0.1.jar', 'SCRCPY-LICENSE.txt', 'jmuxer.min.js', 'JMUXER-LICENSE.txt')) {
+    $webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $screenAssets $name)); Entry = "bin/scrcpy/$name" }
+}
 foreach ($target in @(@{ Arch = 'arm64'; GoArch = 'arm64' }, @{ Arch = 'x64'; GoArch = 'amd64' })) {
     $binary = Join-Path $webdOut "$($target.Arch)/mihomo-webd"
     Push-Location -LiteralPath $webdRoot
@@ -112,6 +122,14 @@ foreach ($target in @(@{ Arch = 'arm64'; GoArch = 'arm64' }, @{ Arch = 'x64'; Go
     }
     $webdFiles += @{ File = (Get-Item -LiteralPath $binary); Entry = "bin/$($target.Arch)/mihomo-webd" }
 }
+
+if ($IsWindows) {
+    & (Join-Path $moduleRoot 'device-helper/build.ps1')
+} else {
+    & sh (Join-Path $moduleRoot 'device-helper/build.sh')
+    if ($LASTEXITCODE -ne 0) { throw '设备控制桥接构建失败' }
+}
+$webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $moduleRoot 'device-helper/out/device-control.jar')); Entry = 'bin/device-control.jar' }
 
 $moduleFiles = @('module.prop', 'customize.sh', 'service.sh', 'post-fs-data.sh') |
     ForEach-Object { Get-Item -LiteralPath (Join-Path $moduleRoot $_) -Force }
@@ -138,6 +156,17 @@ try {
         foreach ($file in $webFiles) {
             $relative = [System.IO.Path]::GetRelativePath($webDist, $file.FullName).Replace('\', '/')
             Add-PackageFile $archive $file "webroot/$relative" $false
+            if ($file.Extension -in @('.wasm', '.js', '.mjs', '.css', '.html', '.json', '.svg', '.otf', '.ttf', '.map', '.txt')) {
+                $entry = $archive.CreateEntry("webroot/$relative.gz", [System.IO.Compression.CompressionLevel]::NoCompression)
+                $target = $entry.Open()
+                try {
+                    $compressed = [System.IO.Compression.GZipStream]::new($target, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+                    try {
+                        $source = [System.IO.File]::OpenRead($file.FullName)
+                        try { $source.CopyTo($compressed) } finally { $source.Dispose() }
+                    } finally { $compressed.Dispose() }
+                } finally { $target.Dispose() }
+            }
         }
         foreach ($item in $webdFiles) { Add-PackageFile $archive $item.File $item.Entry $false }
     } finally { $archive.Dispose() }

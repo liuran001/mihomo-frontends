@@ -21,8 +21,7 @@ decode_input() {
 
 get_policy() {
   policy_load || fail '策略文件损坏'
-  allowed=false
-  policy_allowed && allowed=true
+  policy_cached_status
   auto=false; [ "$policy_autostart" = 1 ] && auto=true
   tether=false; [ "$policy_tethering" = 1 ] && tether=true
   printf '{"ok":true,"autostart":%s,"tethering":%s,"tethering_interfaces":"%s","bypass_packages":"%s","wifi_mode":"%s","wifi_ssids":"%s","current_ssid":"%s","allowed":%s}\n' \
@@ -73,6 +72,8 @@ set_policy() {
         fail "$detail；已回滚设置，旧服务恢复结果=$recovered $recovery"
       fi
     fi
+  elif [ "$policy_wifi_mode" != off ]; then
+    policy_allowed || :
   fi
   echo '{"ok":true}'
 }
@@ -82,7 +83,8 @@ rollback_policy() {
 }
 
 case "$1" in
-  get) lock_backend || fail '后台忙'; trap cleanup EXIT; get_policy ;;
+  get) get_policy ;;
+  ssid) printf '{"ok":true,"current_ssid":"%s"}\n' "$(json_escape "$(current_ssid)")" ;;
   set) lock_backend || fail '后台忙'; trap cleanup EXIT; boot_intent || fail '无法初始化开机状态'; shift; set_policy "$@" ;;
   tick) lock_backend || exit 1; trap cleanup EXIT; reconcile_policy ;;
   watch)
@@ -95,5 +97,5 @@ case "$1" in
       sleep "${MIHOMO_POLICY_INTERVAL:-5}"
     done
     ;;
-  *) fail '用法: policy.sh get|set|tick|watch' ;;
+  *) fail '用法: policy.sh get|ssid|set|tick|watch' ;;
 esac

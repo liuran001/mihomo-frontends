@@ -69,6 +69,20 @@ rules:
 
 const host = { ipv6: false, memMb: 4096, mirror: 'https://ghfast.top/' };
 
+test('Tailscale-only schema matches the full schema without inspecting unrelated rules', () => {
+  const content = routerConfig.replace('proxies:\n', 'proxies:\n  - {name: phone, type: tailscale, hostname: phone, serve: [{port: 80, target: "unix:run/webui.sock"}]}\n');
+  const full = C.schema(content);
+  const scoped = C.tailscale(content);
+  assert.deepEqual(scoped.tailscale, full.tailscale);
+  assert.deepEqual(scoped.tailscaleFields, full.tailscaleFields);
+  assert.deepEqual(Object.keys(scoped).sort(), ['ok', 'tailscale', 'tailscaleFields']);
+  const document = Y.parseDocument('proxies: []', { merge: true });
+  document.toJS = () => ({ proxies: [], get rules() { throw new Error('unrelated rules accessed'); } });
+  const isolated = vm.createContext({ YAML: { ...Y, parseDocument: () => document } });
+  vm.runInContext(fs.readFileSync(path.join(bridge, 'config.js'), 'utf8'), isolated);
+  assert.equal(isolated.mihomoConfig.tailscale('proxies: []').tailscale.length, 0);
+});
+
 function policyRender(content) {
   // 让优化结果过一遍运行时渲染（policy-yaml.awk），确保模块能接管。
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mihomo-config-'));

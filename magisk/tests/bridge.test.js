@@ -651,10 +651,10 @@ test('remote mode reaches the controller through the same-origin /clash proxy', 
   const bridge = remoteBridge((body) => body.args[0] === 'controller' ? { errno: 0, stdout: 'external-controller: 127.0.0.1:9090\nsecret: "k"', stderr: '' } : undefined);
   const original = bridge.context.fetch;
   bridge.context.fetch = async (url, init) => url.startsWith('http://192.168.1.5:9099/clash/')
-    ? { status: 200, text: async () => JSON.stringify({ url, auth: init.headers.Authorization }) } : original(url, init);
+    ? { status: 200, text: async () => JSON.stringify({ url, auth: init.headers.Authorization, credentials: init.credentials }) } : original(url, init);
   const response = await bridge.request('controller', { path: '/version' });
-  assert.deepEqual(response.data, { url: 'http://192.168.1.5:9099/clash/version', auth: 'Bearer k' });
-  assert.equal(bridge.runs.filter((run) => run.body.args[0] === 'api').length, 0);
+  assert.deepEqual(response.data, { url: 'http://192.168.1.5:9099/clash/version', credentials: 'same-origin' });
+  assert.equal(bridge.runs.length, 0, 'remote reads neither controller secrets nor shell scripts');
 });
 
 test('commands use ksu.spawn when the manager provides it so the page is not blocked', async () => {
@@ -1266,6 +1266,44 @@ function tailscaleBridge(handler) {
   });
 }
 
+test('tailscaleRead reads and parses the configuration once without building unrelated forms', async () => {
+  const globals = tailscaleGlobals();
+  let parses = 0;
+  const bridge = makeBridge({
+    globals: { mihomoConfig: {
+      tailscale(content) { parses++; return globals.mihomoConfig.tailscale(content); },
+      schema() { throw new Error('full schema must not be built'); },
+    } },
+    handler(command) {
+      if (command === scriptRoot + 'host.sh read-config') return result(Buffer.from(tailscaleConfig).toString('base64'));
+    },
+  });
+  const response = await bridge.request('tailscaleRead');
+  assert.equal(response.ok, true, response.error);
+  assert.equal(response.content, tailscaleConfig);
+  assert.equal(response.tailscale.length, 3);
+  assert.equal(response.list.length, 3);
+  assert.ok(response.tailscaleFields.length > 0);
+  assert.equal(parses, 1);
+  assert.equal(bridge.commands.filter((command) => command === scriptRoot + 'host.sh read-config').length, 1);
+  assertClean(bridge);
+});
+
+test('tailscaleStatus skips controller and state requests when no Tailscale outbound exists', async () => {
+  const bridge = makeBridge({
+    globals: tailscaleGlobals(),
+    handler(command) {
+      assert.equal(command, scriptRoot + 'host.sh read-config');
+      return result(Buffer.from('proxies: []\nrules: [MATCH,DIRECT]\n').toString('base64'));
+    },
+  });
+  const response = await bridge.request('tailscaleStatus');
+  assert.equal(response.ok, true, response.error);
+  assert.deepEqual(response.list, []);
+  assert.equal(bridge.commands.length, 1);
+  assertClean(bridge);
+});
+
 test('tailscaleStatus decodes only the login profile and resolves state-dir inside the data directory', async () => {
   const profiles = { dea8: { ID: 'dea8', Key: 'profile-dea8', NodeID: 'nX1', UserProfile: { LoginName: 'user@example.com' },
     NetworkProfile: { DomainName: 'example.ts.net', MagicDNSName: 'tail0000.ts.net' } } };
@@ -1344,6 +1382,32 @@ test('tailscale operations use the kernel /tailscale API when the core provides 
   assert.ok(!bridge.commands.some((command) => command.includes('tailscale.sh logout')), 'logout keeps the state directory with a new core');
 });
 
+test('live Tailscale identity never falls back to an old saved account', async () => {
+  for (const state of ['Running', 'NeedsLogin', 'NeedsMachineAuth', 'Stopped', 'NotStarted']) {
+    for (const login of [undefined, 'current@example.com']) {
+      const profiles = {
+        old: { Key: 'profile-old', NodeID: 'old-node', UserProfile: { LoginName: 'teammate@example.com' } },
+        current: { Key: 'profile-current', NodeID: 'current-node', UserProfile: { LoginName: 'saved@example.com' } },
+      };
+      const bridge = tailscaleBridge((command) => {
+        if (command === scriptRoot + 'mihomo.sh status') return jsonResult({ ok: true, running: true });
+        if (command.includes('host.sh api')) return httpResult({ tailscale: [{ name: 'TS-A', state, login }] });
+        if (command.includes('tailscale.sh state')) return jsonResult({ ok: true, exists: true,
+          current: Buffer.from('profile-current').toString('base64'), profiles: Buffer.from(JSON.stringify(profiles)).toString('base64') });
+      });
+      const response = await bridge.request('tailscaleStatus');
+      assert.equal(response.ok, true, response.error);
+      const entry = response.list[0];
+      assert.equal(entry.login, state === 'NotStarted' ? 'saved@example.com' : (state === 'NeedsLogin' ? null : login || null), state);
+      assert.equal(entry.kernel, true);
+      assert.equal(response.list[1].kernel, false, 'an absent outbound uses saved state, not live identity');
+      const reads = bridge.commands.filter((command) => command === scriptRoot + "tailscale.sh state '/data/adb/mihomo/tailscale'");
+      assert.equal(reads.length, state === 'NotStarted' ? 1 : 0, 'live status must not read stale profile data');
+      assertClean(bridge);
+    }
+  }
+});
+
 test('openUrl only accepts http(s) and qrCode returns a square module matrix', async () => {
   const bridge = tailscaleBridge();
   assert.equal((await bridge.request('openUrl', { url: 'javascript:alert(1)' })).ok, false);
@@ -1372,6 +1436,7 @@ function remoteBridge(handler) {
         return { ok: true, status: 200, json: async () => value };
       }
       if (url === 'api/session') return { ok: true, status: 200, json: async () => ({ ok: true, via: 'tailscale', login: 'alice@example.com', passwordless: true }) };
+      if (url === 'http://192.168.1.5:9099/clash/version') return { status: 200, text: async () => '{"version":"x"}' };
       throw new Error('unexpected fetch ' + url);
     },
   });
@@ -1391,10 +1456,23 @@ test('remote mode runs module scripts through api/run without composing shell co
   assert.equal(bridge.runs[0].init.headers['X-Mihomo-Request'], '1');
   assert.equal(bridge.runs[0].init.credentials, 'same-origin');
   assert.deepEqual(await bridge.request('controller', { path: '/version' }), { ok: true, data: { version: 'x' } });
-  const api = bridge.runs.find((run) => run.body.args[0] === 'api').body;
-  assert.deepEqual(api.args, ['api', 'GET', 'http://127.0.0.1:9090/version']);
-  assert.deepEqual(api.env, { MIHOMO_SECRET: 's;$(id)' });
+  assert.equal(bridge.runs.length, 1, 'controller does not run shell commands or read secrets remotely');
   assert.deepEqual(bridge.commands, [], 'no ksu.exec in remote mode');
+});
+
+test('lightweight overview endpoints pass through without falling back to full snapshots', async () => {
+  for (const path of ['/connections/summary', '/overview', '/ebpf/summary']) {
+    const bridge = remoteBridge();
+    bridge.context.fetch = async (url, init) => {
+      assert.equal(url, 'http://192.168.1.5:9099/clash' + path);
+      assert.equal(init.credentials, 'same-origin');
+      return { status: 404, text: async () => '{"message":"Not Found"}' };
+    };
+    assertError(await bridge.request('controller', { path }), /404/);
+    assert.deepEqual(bridge.runs, []);
+    assert.deepEqual(bridge.commands, []);
+    assertClean(bridge);
+  }
 });
 
 test('remote mode reports expired sessions and opens links in the current browser', async () => {
@@ -1406,6 +1484,65 @@ test('remote mode reports expired sessions and opens links in the current browse
   const session = await remoteBridge().request('webuiSession');
   assert.deepEqual(session, { ok: true, remote: true, via: 'tailscale', login: 'alice@example.com', passwordless: true });
   assert.deepEqual(await makeBridge().request('webuiSession'), { ok: true, remote: false });
+});
+
+test('remote requests time out even if transport or response decoding never settles', { timeout: 2000 }, async () => {
+  for (const operation of ['webuiSession', 'webuiLogout', 'status']) {
+    for (const stage of ['fetch', 'body']) {
+      for (const abortSupported of [true, false]) {
+        const bridge = makeBridge({
+          remote: {},
+          globals: abortSupported ? {} : { AbortController: undefined },
+          fetch: () => stage === 'fetch' ? new Promise(() => {}) : Promise.resolve({
+            ok: true, status: 200, json: () => new Promise(() => {}),
+          }),
+        });
+        const pending = bridge.request(operation);
+        for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+        assert.equal(bridge.fetches.length, 1);
+        bridge.advance(operation === 'status' ? 35000 : 10000);
+        assertError(await pending, /超时/);
+        if (abortSupported) assert.equal(bridge.fetches[0].init.signal.aborted, true);
+        assert.equal(bridge.context.location.href, 'http://192.168.1.5:9099/');
+        assertClean(bridge);
+      }
+    }
+  }
+});
+
+test('session expiration redirects to login and failed logout does not report success', async () => {
+  for (const operation of ['webuiSession', 'webuiLogout']) {
+    const bridge = makeBridge({ remote: {}, fetch: async () => ({
+      ok: false, status: 401, json: async () => ({ error: '需要登录' }),
+    }) });
+    assertError(await bridge.request(operation), /登录/);
+    assert.match(bridge.context.location.href, /^login\?next=/);
+    assertClean(bridge);
+  }
+  const bridge = makeBridge({ remote: {}, fetch: async () => ({
+    ok: false, status: 503, json: async () => ({ error: '服务不可用' }),
+  }) });
+  assertError(await bridge.request('webuiLogout'), /服务不可用/);
+  assert.equal(bridge.context.location.href, 'http://192.168.1.5:9099/');
+  assertClean(bridge);
+});
+
+test('timed-out session reads allow retry and ignore late unauthorized responses', async () => {
+  let finish;
+  let attempts = 0;
+  const bridge = makeBridge({ remote: {}, fetch: () => {
+    if (++attempts === 1) return new Promise((resolve) => { finish = resolve; });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ via: 'lan' }) });
+  } });
+  const pending = bridge.request('webuiSession');
+  bridge.advance(10000);
+  assertError(await pending, /超时/);
+  assertClean(bridge);
+  assert.equal((await bridge.request('webuiSession')).via, 'lan');
+  finish({ ok: false, status: 401 });
+  for (let tick = 0; tick < 5; tick++) await Promise.resolve();
+  assert.equal(bridge.context.location.href, 'http://192.168.1.5:9099/');
+  assertClean(bridge);
 });
 
 test('dashboard builds a zashboard setup link for the manager and for remote access', async () => {
@@ -1494,4 +1631,72 @@ test('proxyIcon downloads in the browser first, falls back to the module script 
   for (const url of ['file:///etc/passwd', 'https://a b', 'javascript:alert(1)']) assertError(await browser.request('proxyIcon', { url }));
   const broken = makeBridge({ handler: (command) => command.includes('host.sh icon') ? result('', 1, 'curl: (22) 404') : undefined });
   assertError(await broken.request('proxyIcon', { url: 'https://x.example/i.png' }), /404/);
+});
+
+test('enhanced settings reject remote callers and encode local settings without shell interpolation', async () => {
+  const remote = makeBridge({ remote: {} });
+  assertError(await remote.request('enhancedSet', { settings: { enabled: true } }), /本机/);
+  assert.equal(remote.fetches.length, 0);
+  const local = makeBridge();
+  const settings = { enabled: true, password: "operation's password", scrcpy_port: 8080, scrcpy_mode: 'builtin' };
+  assert.equal((await local.request('enhancedSet', { settings })).ok, true);
+  const words = shellWords(local.commands.at(-1));
+  assert.equal(words.at(-2), 'enhanced-set');
+  assert.deepEqual(JSON.parse(Buffer.from(words.at(-1), 'base64').toString()), settings);
+  for (const invalid of [{ enabled: 'true' }, { password: 'short' }, { scrcpy_port: 65536 }, { scrcpy_mode: 'unknown' }, { require_password: false }]) {
+    assertError(await local.request('enhancedSet', { settings: invalid }));
+  }
+  assertClean(local);
+});
+
+test('local enhanced token stays in memory and clears on lock and settings changes', async () => {
+  const local = makeBridge({ handler(command) {
+    if (command.startsWith(scriptRoot + 'webui.sh enhanced-request ')) {
+      const words = shellWords(command);
+      return jsonResult(words.at(-2) === 'unlock' ? { ok: true, token: 'manager-token' } : { ok: true });
+    }
+  } });
+  assert.equal((await local.request('enhanced', { action: 'unlock', payload: { password: 'operation-password' } })).ok, true);
+  const tokenForLastCall = () => JSON.parse(Buffer.from(shellWords(local.commands.at(-1)).at(-1), 'base64').toString()).token;
+  await local.request('enhanced', { action: 'battery' });
+  assert.equal(tokenForLastCall(), 'manager-token');
+  await local.request('enhanced', { action: 'lock' });
+  await local.request('enhanced', { action: 'status' });
+  assert.equal(tokenForLastCall(), '');
+  await local.request('enhanced', { action: 'unlock', payload: { password: 'operation-password' } });
+  await local.request('enhancedSet', { settings: { enabled: false } });
+  await local.request('enhanced', { action: 'status' });
+  assert.equal(tokenForLastCall(), '');
+  assertClean(local);
+});
+
+test('remote enhanced actions use same-origin credentials and reject unknown operations', async () => {
+  const remote = makeBridge({ remote: {}, fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }) });
+  assert.equal((await remote.request('enhanced', { action: 'sms', payload: { limit: 20 } })).ok, true);
+  const { url, init } = remote.fetches.at(-1);
+  assert.equal(url, 'api/enhanced/sms');
+  assert.equal(init.credentials, 'same-origin');
+  assert.equal(init.method, 'POST');
+  assert.equal(init.headers['X-Mihomo-Request'], '1');
+  assert.deepEqual(JSON.parse(init.body), { limit: 20 });
+  const requests = remote.fetches.length;
+  assertError(await remote.request('enhanced', { action: '../run' }));
+  assertError(await remote.request('enhanced', { action: 'battery', payload: { command: 'id' } }));
+  assert.equal(remote.fetches.length, requests);
+  assertClean(remote);
+});
+
+test('screen settings and stop use the authenticated enhanced action channel', async () => {
+  const remote = makeBridge({ remote: {}, fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }) });
+  const settings = { enabled: true, mode: 'builtin', max_size: 960, fps: 15, bit_rate: 1000000 };
+  assert.equal((await remote.request('enhanced', { action: 'scrcpy-set', payload: settings })).ok, true);
+  assert.equal(remote.fetches.at(-1).url, 'api/enhanced/scrcpy-set');
+  assert.deepEqual(JSON.parse(remote.fetches.at(-1).init.body), settings);
+  assert.equal((await remote.request('enhanced', { action: 'scrcpy-stop' })).ok, true);
+  assert.equal(remote.fetches.at(-1).url, 'api/enhanced/scrcpy-stop');
+  const requests = remote.fetches.length;
+  assertError(await remote.request('enhanced', { action: 'scrcpy-stop', payload: { command: 'id' } }));
+  assertError(await remote.request('enhanced', { action: 'scrcpy-set', payload: { executable: '/bin/sh' } }));
+  assert.equal(remote.fetches.length, requests);
+  assertClean(remote);
 });

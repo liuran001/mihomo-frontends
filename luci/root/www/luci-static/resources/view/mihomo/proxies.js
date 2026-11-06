@@ -170,12 +170,8 @@ return view.extend({
 
 		this.body = E('div', { 'class': 'mh-groups' }, mui.empty('读取中…'));
 		const root = E('div', { 'class': 'mh' }, [ header.render(), toolbar, this.body ]);
-		this.reload();
-		// 自动选择的组会随测速结果变化，定期刷新
-		this.timer = setInterval(() => {
-			if (!document.body.contains(root)) return clearInterval(this.timer);
-			if (!document.hidden) this.reload();
-		}, 15000);
+		if (this.poller) this.poller.close();
+		this.poller = api.poll(root, 15000, () => this.reload());
 		return root;
 	},
 

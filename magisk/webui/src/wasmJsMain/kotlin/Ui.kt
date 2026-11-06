@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,6 +75,9 @@ object Tone {
 
 private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
+val LocalWideLayout = staticCompositionLocalOf { false }
+val LocalPageWidth = staticCompositionLocalOf { 720.dp }
+
 /** 标准页面：大标题 + 折叠 + 回弹列表。 */
 @Composable
 fun Page(
@@ -88,7 +92,8 @@ fun Page(
     content: LazyListScope.() -> Unit,
 ) {
     val behavior = MiuixScrollBehavior()
-    Column(modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface)) {
+    Column(modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.widthIn(max = LocalPageWidth.current).fillMaxWidth()) {
         TopAppBar(
             title = title,
             subtitle = subtitle,
@@ -98,11 +103,12 @@ fun Page(
             defaultWindowInsetsPadding = false,
             color = MiuixTheme.colorScheme.surface,
         )
+        }
         header?.invoke()
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.widthIn(max = 720.dp).fillMaxSize()
+                modifier = Modifier.widthIn(max = LocalPageWidth.current).fillMaxSize()
                     .overScrollVertical()
                     .nestedScroll(behavior.nestedScrollConnection),
                 contentPadding = PaddingValues(bottom = 24.dp + bottomPadding),

@@ -191,6 +191,8 @@ private class SettingsState(private val scope: CoroutineScope) {
     var showHelp by mutableStateOf(false)
     var ssidInput by mutableStateOf("")
     var ssidError by mutableStateOf<String?>(null)
+    var ssidLoading by mutableStateOf(false)
+        private set
     var pickerOpen by mutableStateOf(false)
         private set
     var pickerSelection by mutableStateOf<Set<String>>(emptySet())
@@ -384,7 +386,20 @@ private class SettingsState(private val scope: CoroutineScope) {
     }
 
     fun addCurrentSsid() {
-        if (currentSsid.isNotEmpty()) addSsid(currentSsid)
+        if (!editable || ssidLoading) return
+        ssidLoading = true
+        ssidError = null
+        scope.launch {
+            try {
+                currentSsid = request("policySsid").string("current_ssid")
+                if (currentSsid.isEmpty()) ssidError = "未连接 Wi-Fi 或系统未提供名称，请手动添加。"
+                else addSsid(currentSsid)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                ssidError = failure.message ?: "读取 Wi-Fi 失败"
+            } finally { ssidLoading = false }
+        }
     }
 
     fun removeSsid(index: Int) {
@@ -504,6 +519,7 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
             }
             group("远程访问") {
                 ArrowRow("网页管理", "在其它设备的浏览器里管理本模块", startIcon = MiuixIcons.Regular.Link) { onNavigate("webui") }
+                ArrowRow("设备控制", "增强功能：短信、电量、热点、终端与屏幕", startIcon = MiuixIcons.Regular.Tune) { onNavigate("enhanced") }
                 ArrowRow("Tailscale", "在外网安全访问本机与家里的设备", startIcon = MiuixIcons.Regular.Layers) { onNavigate("tailscale") }
                 ArrowRow("zashboard 面板", if (Dashboard.opening) "正在打开…" else "功能更全的代理面板，在浏览器里打开",
                     startIcon = MiuixIcons.Regular.Info) {
@@ -577,6 +593,7 @@ private fun SettingsSsidSheet(state: SettingsState, onAdd: () -> Unit) {
     Sheet(show = state.showSsids, title = "Wi-Fi 列表", onDismissRequest = { state.showSsids = false }) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             val ssids = draft?.ssids?.settingsLines()?.split('\n').orEmpty()
+            state.ssidError?.let { Banner(it, BannerKind.Error) }
             Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
                 ssids.forEachIndexed { index, ssid ->
                     if (ssid.isNotEmpty()) BasicComponent(title = ssid, endActions = {
@@ -588,9 +605,8 @@ private fun SettingsSsidSheet(state: SettingsState, onAdd: () -> Unit) {
                 if (ssids.none { it.isNotEmpty() }) BasicComponent(title = "尚未添加", summary = "添加后才会按条件暂停或运行")
             }
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (state.currentSsid.isNotEmpty() && state.currentSsid !in ssids) {
-                    TextButton("添加当前 Wi-Fi", onClick = { state.addCurrentSsid() }, enabled = state.editable, modifier = Modifier.weight(1f))
-                }
+                TextButton(if (state.ssidLoading) "读取中…" else "添加当前 Wi-Fi", onClick = { state.addCurrentSsid() },
+                    enabled = state.editable && !state.ssidLoading, modifier = Modifier.weight(1f))
                 TextButton("手动添加", onClick = onAdd, enabled = state.editable, modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.textButtonColorsPrimary())
             }

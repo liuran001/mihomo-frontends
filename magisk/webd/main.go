@@ -41,6 +41,8 @@ func main() {
 	}
 	args := flags.Args()
 	switch os.Args[1] {
+	case "assets":
+		fail(prepareScrcpyAssets(*dataDir))
 	case "serve":
 		serve(*configPath, *webroot, *scriptDir, *dataDir, *socket)
 	case "get":
@@ -75,6 +77,20 @@ func main() {
 			fail(errors.New("缺少密码"))
 		}
 		fail(setPassword(*configPath, args[0]))
+	case "enhanced-set":
+		if len(args) != 1 {
+			fail(errors.New("缺少增强功能设置"))
+		}
+		fail(setEnhancedConfig(*configPath, args[0]))
+	case "enhanced-request":
+		if len(args) != 2 {
+			fail(errors.New("缺少增强操作参数"))
+		}
+		response, err := localEnhancedRequest(*dataDir, args[0], args[1])
+		if err != nil {
+			fail(err)
+		}
+		emit(response)
 	case "addrs":
 		emit(map[string]any{"ok": true, "addrs": localAddrs()})
 	default:
@@ -110,10 +126,6 @@ func setConfig(path, encoded string) error {
 	if err != nil {
 		return err
 	}
-	config, err := loadConfig(path)
-	if err != nil {
-		return err
-	}
 	var patch struct {
 		Enabled             *bool     `json:"enabled"`
 		Port                *int      `json:"port"`
@@ -125,34 +137,34 @@ func setConfig(path, encoded string) error {
 		TailscaleUsers      *[]string `json:"tailscale_users"`
 		SessionHours        *int      `json:"session_hours"`
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&patch); err != nil {
+	if err := decodeStrict(strings.NewReader(string(data)), &patch); err != nil {
 		return fmt.Errorf("设置无效：%w", err)
 	}
-	assign := func(target *bool, value *bool) {
-		if value != nil {
-			*target = *value
+	return updateConfig(path, func(config *Config) error {
+		assign := func(target *bool, value *bool) {
+			if value != nil {
+				*target = *value
+			}
 		}
-	}
-	assign(&config.Enabled, patch.Enabled)
-	assign(&config.LAN, patch.LAN)
-	assign(&config.RequirePassword, patch.RequirePassword)
-	assign(&config.Tailscale, patch.Tailscale)
-	assign(&config.TailscaleNoPassword, patch.TailscaleNoPassword)
-	if patch.Port != nil {
-		config.Port = *patch.Port
-	}
-	if patch.SessionHours != nil {
-		config.SessionHours = *patch.SessionHours
-	}
-	if patch.AllowCIDRs != nil {
-		config.AllowCIDRs = *patch.AllowCIDRs
-	}
-	if patch.TailscaleUsers != nil {
-		config.TailscaleUsers = *patch.TailscaleUsers
-	}
-	return saveConfig(path, config)
+		assign(&config.Enabled, patch.Enabled)
+		assign(&config.LAN, patch.LAN)
+		assign(&config.RequirePassword, patch.RequirePassword)
+		assign(&config.Tailscale, patch.Tailscale)
+		assign(&config.TailscaleNoPassword, patch.TailscaleNoPassword)
+		if patch.Port != nil {
+			config.Port = *patch.Port
+		}
+		if patch.SessionHours != nil {
+			config.SessionHours = *patch.SessionHours
+		}
+		if patch.AllowCIDRs != nil {
+			config.AllowCIDRs = *patch.AllowCIDRs
+		}
+		if patch.TailscaleUsers != nil {
+			config.TailscaleUsers = *patch.TailscaleUsers
+		}
+		return nil
+	})
 }
 
 func setPassword(path, encoded string) error {
@@ -160,24 +172,24 @@ func setPassword(path, encoded string) error {
 	if err != nil {
 		return err
 	}
-	config, err := loadConfig(path)
-	if err != nil {
-		return err
-	}
 	password := string(data)
-	if password == "" {
-		config.Password = nil
-		return saveConfig(path, config)
-	}
-	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 6 || len(password) > 256 {
-		return errors.New("密码须为 6–256 个字符")
-	}
-	hash, err := hashPassword(password)
-	if err != nil {
-		return err
-	}
-	config.Password = hash
-	return saveConfig(path, config)
+	return updateConfig(path, func(config *Config) error {
+		if password == "" {
+			config.Password = nil
+			config.Enhanced.Enabled = false
+			config.Enhanced.Scrcpy = false
+			return nil
+		}
+		if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 6 || len(password) > 256 {
+			return errors.New("密码须为 6–256 个字符")
+		}
+		hash, err := hashPassword(password)
+		if err != nil {
+			return err
+		}
+		config.Password = hash
+		return nil
+	})
 }
 
 // localAddrs 列出非回环的 IPv4 与全局 IPv6 地址，供设置页显示访问链接。

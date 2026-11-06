@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,7 +12,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/netip"
 	"net/url"
 	"os"
@@ -56,6 +53,7 @@ const (
 	originLocal origin = iota
 	originLAN
 	originTailscale
+	originManager
 )
 
 func (o origin) String() string {
@@ -95,18 +93,37 @@ type Server struct {
 	shell      string
 	dataDir    string
 
-	mu         sync.Mutex
-	config     Config
-	configTime time.Time
-	sessions   map[string]session
-	failures   map[string]*failures
-	passwordID string
+	mu               sync.Mutex
+	config           Config
+	configTime       time.Time
+	configSize       int64
+	configErr        error
+	sessions         map[string]session
+	failures         map[string]*failures
+	passwordID       string
+	enhancedID       string
+	enhancedSessions map[string]enhancedSession
+	deviceSlots      chan struct{}
+	terminalSlots    chan struct{}
+	scrcpySlots      chan struct{}
+	passwordSlots    chan struct{}
+	runSlots         chan struct{}
+	controllerMu     sync.Mutex
+	controllerCache  controllerSettings
+	controllerTime   time.Time
+	controllerSize   int64
+	scrcpyMu         sync.Mutex
+	scrcpyActive     *scrcpySession
+	scrcpyError      string
 }
 
 func newServer(configPath, webroot, scriptDir, dataDir string) (*Server, error) {
 	server := &Server{
 		configPath: configPath, webroot: webroot, scriptDir: scriptDir, dataDir: dataDir,
 		shell: "/system/bin/sh", sessions: map[string]session{}, failures: map[string]*failures{},
+		enhancedSessions: map[string]enhancedSession{}, deviceSlots: make(chan struct{}, 2),
+		terminalSlots: make(chan struct{}, 1), scrcpySlots: make(chan struct{}, 8), passwordSlots: make(chan struct{}, 2),
+		runSlots: make(chan struct{}, 4),
 	}
 	if _, err := os.Stat(server.shell); err != nil {
 		server.shell = "sh"
@@ -119,34 +136,49 @@ func newServer(configPath, webroot, scriptDir, dataDir string) (*Server, error) 
 
 // reload 在 webui.json 变化时重新读取；密码变化后所有会话失效。
 func (s *Server) reload() error {
-	info, err := os.Stat(s.configPath)
-	var modified time.Time
-	if err == nil {
-		modified = info.ModTime()
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.configTime.IsZero() && modified.Equal(s.configTime) {
-		return nil
+	info, err := os.Stat(s.configPath)
+	var modified time.Time
+	var size int64
+	if err == nil {
+		modified = info.ModTime()
+		size = info.Size()
+	}
+	if !s.configTime.IsZero() && modified.Equal(s.configTime) && size == s.configSize {
+		return s.configErr
 	}
 	config, err := loadConfig(s.configPath)
+	if err == nil && modified.IsZero() && !s.configTime.IsZero() {
+		err = errors.New("网页管理配置已移除")
+	}
 	if err != nil {
+		if s.configErr == nil || s.configErr.Error() != err.Error() {
+			log.Printf("reload config: %v", err)
+		}
+		s.configErr = err
+		if !modified.IsZero() {
+			s.configTime, s.configSize = modified, size
+		}
+		s.sessions = map[string]session{}
+		s.enhancedSessions = map[string]enhancedSession{}
 		return err
 	}
-	passwordID := ""
-	if config.Password != nil {
-		passwordID = config.Password.Salt + config.Password.Key
-	}
+	passwordID := passwordConfigID(config)
 	if passwordID != s.passwordID {
 		s.sessions = map[string]session{}
 	}
-	s.config, s.configTime, s.passwordID = config, modified, passwordID
+	if identity := enhancedConfigID(config); identity != s.enhancedID {
+		s.enhancedSessions = map[string]enhancedSession{}
+		s.enhancedID = identity
+	}
+	s.config, s.configTime, s.configSize, s.passwordID, s.configErr = config, modified, size, passwordID, nil
 	return nil
 }
 
 func (s *Server) currentConfig() Config {
 	if err := s.reload(); err != nil {
-		log.Printf("reload config: %v", err)
+		return Config{RequirePassword: true, Password: &Hash{}}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,11 +194,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/session", s.authed(s.handleSession))
 	mux.HandleFunc("POST /api/run", s.authed(s.handleRun))
 	mux.HandleFunc("/clash/", s.authed(s.handleController))
+	mux.HandleFunc("/api/enhanced/", s.authed(s.handleEnhanced))
+	mux.HandleFunc("/enhanced/scrcpy/", s.authed(s.handleScrcpy))
 	mux.HandleFunc("/", s.authed(s.handleStatic))
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		who, ok := request.Context().Value(contextKey{}).(caller)
 		if !ok {
 			http.Error(writer, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := s.reload(); err != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "安全配置不可用，请在本机修复网页管理设置"})
 			return
 		}
 		config := s.currentConfig()
@@ -195,6 +233,8 @@ func (s *Server) originAllowed(config Config, who caller) bool {
 // passwordless 判定无需登录即可使用：Tailnet 身份免密；本机与局域网在 require_password 关闭或没有密码时免密。
 func (s *Server) passwordless(config Config, who caller) bool {
 	switch who.origin {
+	case originManager:
+		return true
 	case originTailscale:
 		return config.TailscaleNoPassword && who.login != "" && config.tailscaleUserAllowed(who.login)
 	default:
@@ -207,7 +247,7 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 		who := request.Context().Value(contextKey{}).(caller)
 		config := s.currentConfig()
 		if !s.passwordless(config, who) && !s.validSession(request) {
-			if strings.HasPrefix(request.URL.Path, "/api/") || strings.HasPrefix(request.URL.Path, "/clash/") {
+			if strings.HasPrefix(request.URL.Path, "/api/") || strings.HasPrefix(request.URL.Path, "/clash/") || strings.HasPrefix(request.URL.Path, "/enhanced/") {
 				writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "需要登录"})
 				return
 			}
@@ -229,6 +269,9 @@ func (s *Server) validSession(request *http.Request) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.configErr != nil {
+		return false
+	}
 	entry, ok := s.sessions[cookie.Value]
 	if !ok {
 		return false
@@ -275,7 +318,7 @@ func (s *Server) handleLogin(writer http.ResponseWriter, request *http.Request) 
 	}
 	who := request.Context().Value(contextKey{}).(caller)
 	config := s.currentConfig()
-	if s.passwordless(config, who) {
+	if s.passwordless(config, who) && config.Password == nil {
 		writeJSON(writer, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -291,8 +334,15 @@ func (s *Server) handleLogin(writer http.ResponseWriter, request *http.Request) 
 	var body struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(io.LimitReader(request.Body, 4096)).Decode(&body); err != nil {
+	if err := decodeStrict(io.LimitReader(request.Body, 4096), &body); err != nil || len(body.Password) > 256 {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "请求无效"})
+		return
+	}
+	select {
+	case s.passwordSlots <- struct{}{}:
+		defer func() { <-s.passwordSlots }()
+	default:
+		writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "密码验证繁忙，请稍后重试"})
 		return
 	}
 	if !config.Password.verify(body.Password) {
@@ -308,12 +358,23 @@ func (s *Server) handleLogin(writer http.ResponseWriter, request *http.Request) 
 	}
 	value := hex.EncodeToString(token)
 	lifetime := time.Duration(config.SessionHours) * time.Hour
+	_ = s.reload()
 	s.mu.Lock()
+	if s.configErr != nil || passwordConfigID(config) != s.passwordID {
+		s.mu.Unlock()
+		writeJSON(writer, http.StatusConflict, map[string]any{"error": "安全设置已更改，请重新登录"})
+		return
+	}
 	now := time.Now()
 	for id, entry := range s.sessions {
 		if now.After(entry.expires) {
 			delete(s.sessions, id)
 		}
+	}
+	if len(s.sessions) >= 128 {
+		s.mu.Unlock()
+		writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "登录会话过多，请先退出闲置会话"})
+		return
 	}
 	s.sessions[value] = session{expires: now.Add(lifetime), login: who.login}
 	s.mu.Unlock()
@@ -368,6 +429,11 @@ func (s *Server) handleLogout(writer http.ResponseWriter, request *http.Request)
 	if cookie, err := request.Cookie(sessionCookie); err == nil {
 		s.mu.Lock()
 		delete(s.sessions, cookie.Value)
+		for token, session := range s.enhancedSessions {
+			if session.parent == cookie.Value {
+				delete(s.enhancedSessions, token)
+			}
+		}
 		s.mu.Unlock()
 	}
 	http.SetCookie(writer, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
@@ -412,14 +478,16 @@ func (s *Server) handleRun(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var body runRequest
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRunBody))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
+	if err := decodeStrict(http.MaxBytesReader(writer, request.Body, maxRunBody), &body); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "请求无效：" + err.Error()})
 		return
 	}
 	if !slices.Contains(scripts, body.Script) {
 		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "不允许的脚本：" + body.Script})
+		return
+	}
+	if body.Script == "webui.sh" && (len(body.Args) == 0 || !slices.Contains([]string{"status", "set", "passwd", "start", "stop", "restart"}, body.Args[0])) {
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "增强功能设置只能在本机模块 WebUI 修改"})
 		return
 	}
 	if len(body.Args) > 32 {
@@ -440,6 +508,13 @@ func (s *Server) handleRun(writer http.ResponseWriter, request *http.Request) {
 		}
 		env = append(env, name+"="+value)
 	}
+	select {
+	case s.runSlots <- struct{}{}:
+		defer func() { <-s.runSlots }()
+	default:
+		writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "模块操作繁忙，请稍后重试"})
+		return
+	}
 	timeout := time.Duration(body.Timeout) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -449,6 +524,7 @@ func (s *Server) handleRun(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, s.shell, append([]string{filepath.Join(s.scriptDir, body.Script)}, body.Args...)...)
+	setupProcess(command)
 	command.Env = env
 	command.Dir = "/"
 	var stdout, stderr cappedBuffer
@@ -477,58 +553,8 @@ func (s *Server) handleRun(writer http.ResponseWriter, request *http.Request) {
 
 // controllerAddress 读取 config.yaml 的 external-controller（与 backend.js detectController 相同的规则）。
 func (s *Server) controllerAddress() (string, error) {
-	file, err := os.Open(filepath.Join(s.dataDir, "config.yaml"))
-	if err != nil {
-		return "", errors.New("读取配置失败")
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "external-controller:") {
-			continue
-		}
-		value := strings.TrimSpace(strings.TrimPrefix(line, "external-controller:"))
-		if index := strings.Index(value, " #"); index >= 0 {
-			value = strings.TrimSpace(value[:index])
-		}
-		value = strings.Trim(value, `"'`)
-		host, port, err := net.SplitHostPort(value)
-		if err != nil {
-			return "", errors.New("external-controller 地址无效")
-		}
-		if host == "" || host == "0.0.0.0" || host == "::" || host == "*" {
-			host = "127.0.0.1"
-		}
-		if _, err := netip.ParseAddr(host); err != nil {
-			return "", errors.New("external-controller 须为 IP 地址")
-		}
-		return net.JoinHostPort(host, port), nil
-	}
-	return "", errors.New("配置中没有 external-controller")
-}
-
-// handleController 把 /clash/ 反向代理到本机控制器，供 zashboard 等面板通过网页管理端口访问。
-func (s *Server) handleController(writer http.ResponseWriter, request *http.Request) {
-	address, err := s.controllerAddress()
-	if err != nil {
-		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
-	}
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			proxyRequest.SetURL(&url.URL{Scheme: "http", Host: address})
-			proxyRequest.Out.URL.Path = "/" + strings.TrimPrefix(proxyRequest.In.URL.Path, "/clash/")
-			proxyRequest.Out.URL.RawPath = ""
-			proxyRequest.Out.Header.Del("Cookie")
-			proxyRequest.Out.Header.Del("Origin")
-		},
-		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, err error) {
-			writeJSON(writer, http.StatusBadGateway, map[string]any{"error": "控制器不可达：" + err.Error()})
-		},
-	}
-	proxy.ServeHTTP(writer, request)
+	config, err := s.controllerConfig()
+	return config.address, err
 }
 
 func (s *Server) handleStatic(writer http.ResponseWriter, request *http.Request) {
@@ -561,12 +587,17 @@ func (s *Server) handleStatic(writer http.ResponseWriter, request *http.Request)
 	} else {
 		writer.Header().Set("Cache-Control", "no-cache")
 	}
-	if compressible(name) && strings.Contains(request.Header.Get("Accept-Encoding"), "gzip") {
-		if data, err := s.gzipped(file, info); err == nil {
-			writer.Header().Set("Content-Encoding", "gzip")
-			writer.Header().Add("Vary", "Accept-Encoding")
-			http.ServeContent(writer, request, name, info.ModTime(), bytes.NewReader(data))
-			return
+	if compressible(name) {
+		writer.Header().Add("Vary", "Accept-Encoding")
+		if acceptsGzip(request.Header.Get("Accept-Encoding")) {
+			if compressed, err := os.Open(file + ".gz"); err == nil {
+				defer compressed.Close()
+				if compressedInfo, err := compressed.Stat(); err == nil && compressedInfo.Mode().IsRegular() && !compressedInfo.ModTime().Before(info.ModTime()) {
+					writer.Header().Set("Content-Encoding", "gzip")
+					http.ServeContent(writer, request, name, info.ModTime(), compressed)
+					return
+				}
+			}
 		}
 	}
 	http.ServeFile(writer, request, file)
@@ -582,46 +613,26 @@ func compressible(name string) bool {
 	return false
 }
 
-type gzipEntry struct {
-	modified time.Time
-	size     int64
-	data     []byte
-}
-
-var (
-	gzipMu    sync.Mutex
-	gzipCache = map[string]gzipEntry{}
-)
-
-// gzipped 压缩一次后缓存在内存里（按文件修改时间与大小失效）；webroot 只有十几 MB，压缩后约三分之一。
-func (s *Server) gzipped(file string, info os.FileInfo) ([]byte, error) {
-	gzipMu.Lock()
-	entry, ok := gzipCache[file]
-	gzipMu.Unlock()
-	if ok && entry.modified.Equal(info.ModTime()) && entry.size == info.Size() {
-		return entry.data, nil
+func acceptsGzip(value string) bool {
+	for _, item := range strings.Split(value, ",") {
+		parts := strings.Split(item, ";")
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "gzip") {
+			continue
+		}
+		quality := 1.0
+		for _, option := range parts[1:] {
+			if name, weight, found := strings.Cut(strings.TrimSpace(option), "="); found && strings.EqualFold(name, "q") {
+				quality, _ = strconv.ParseFloat(weight, 64)
+			}
+		}
+		return quality > 0 && quality <= 1
 	}
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		return nil, err
-	}
-	var buffer bytes.Buffer
-	writer, _ := gzip.NewWriterLevel(&buffer, gzip.BestCompression)
-	if _, err := writer.Write(raw); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	data := buffer.Bytes()
-	gzipMu.Lock()
-	gzipCache[file] = gzipEntry{modified: info.ModTime(), size: info.Size(), data: data}
-	gzipMu.Unlock()
-	return data, nil
+	return false
 }
 
 // listen 打开 TCP 与 unix socket 监听，并把来源写进请求上下文。
 func (s *Server) listen(ctx context.Context, socketPath string) error {
+	defer s.shutdownScrcpy()
 	config := s.currentConfig()
 	host := "127.0.0.1"
 	if config.LAN {
@@ -636,7 +647,7 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 	}
 	handler := s.Handler()
 	servers := []*http.Server{{
-		Handler: handler, ReadHeaderTimeout: 30 * time.Second,
+		Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
 			addr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 			who := caller{origin: originLAN, addr: addr.Addr().Unmap()}
@@ -647,17 +658,48 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 		},
 	}}
 	listeners := []net.Listener{tcp}
+	managerPath := filepath.Join(s.dataDir, "run", "webui-manager.sock")
+	if err := os.MkdirAll(filepath.Dir(managerPath), 0o700); err != nil {
+		tcp.Close()
+		return err
+	}
+	_ = os.Remove(managerPath)
+	manager, err := net.Listen("unix", managerPath)
+	if err != nil {
+		tcp.Close()
+		return err
+	}
+	if err := os.Chmod(managerPath, 0o600); err != nil {
+		manager.Close()
+		tcp.Close()
+		return err
+	}
+	defer os.Remove(managerPath)
+	listeners = append(listeners, manager)
+	servers = append(servers, &http.Server{
+		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if !strings.HasPrefix(request.URL.Path, "/api/enhanced/") {
+				http.NotFound(writer, request)
+				return
+			}
+			handler.ServeHTTP(writer, request)
+		}), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+		ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
+			return context.WithValue(ctx, contextKey{}, caller{origin: originManager})
+		},
+	})
 	if socketPath != "" {
 		_ = os.Remove(socketPath)
 		unix, err := net.Listen("unix", socketPath)
 		if err != nil {
 			tcp.Close()
+			manager.Close()
 			return err
 		}
 		_ = os.Chmod(socketPath, 0o600)
 		listeners = append(listeners, unix)
 		servers = append(servers, &http.Server{
-			Handler: tailscaleIdentity(handler), ReadHeaderTimeout: 30 * time.Second,
+			Handler: tailscaleIdentity(handler), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, contextKey{}, caller{origin: originTailscale})
 			},

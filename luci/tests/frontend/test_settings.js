@@ -54,4 +54,10 @@ assert.throws(() => st.serveData([ { port: 1, target: 'unix:a' }, { port: '1', t
 assert.throws(() => st.serveData([ { port: 81, target: 'http://router.lan:80' } ], true), /目标/);
 assert.throws(() => st.serveData([ { port: 0, target: 'unix:a' } ], true), /端口/);
 
-// 网卡下拉的说明
+const savedIdentity = { logged_in: true, login: 'old@example.invalid', tailnet: 'old.invalid', state_dir: '/tmp/tailscale' };
+assert.strictEqual(st.tsIdentity({ state: 'NeedsLogin' }, savedIdentity).login, null);
+assert.strictEqual(st.tsIdentity({ state: 'NeedsLogin' }, savedIdentity).logged_in, false);
+assert.strictEqual(st.tsIdentity({ state: 'Running' }, savedIdentity).login, null);
+assert.strictEqual(st.tsIdentity({ state: 'Running', login: 'device-owner@example.invalid' }, savedIdentity).login, 'device-owner@example.invalid');
+assert.strictEqual(st.tsIdentity({ state: 'NotStarted' }, savedIdentity), savedIdentity);
+assert.strictEqual(st.tsIdentity(null, savedIdentity), savedIdentity);

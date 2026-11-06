@@ -142,6 +142,17 @@ function tsKernelLogin(name, wait) {
 	return api.request('POST', '/tailscale/' + encodeURIComponent(name) + '/login?wait=' + wait, undefined, { timeout: (wait + 10) * 1000 });
 }
 
+function tsIdentity(live, saved) {
+	if (!live || live.state === 'NotStarted') return saved;
+	return {
+		logged_in: live.state === 'Running',
+		login: live.login || null,
+		tailnet: live.tailnet || null,
+		magic_dns: (live.self && live.self.dnsName) || null,
+		state_dir: saved.state_dir
+	};
+}
+
 function tsStateLabel(live, st, t) {
 	const tag = (cls, text) => E('span', { 'class': cls }, text);
 	if (live) {
@@ -164,7 +175,7 @@ const TABS = [ [ 'ebpf', '透明代理' ], [ 'basic', '基础' ], [ 'dns', 'DNS'
 const DNS_MODES = [ [ 'hijack', 'hijack：接管 DNS 查询' ], [ 'respect_policy', 'respect_policy：按规则决定是否接管' ], [ 'off', 'off：不处理 DNS' ] ];
 
 return view.extend({
-	SPECS, toForm, fromForm, changed, changedFields, policyRows, policyData, serveData,
+	SPECS, toForm, fromForm, changed, changedFields, policyRows, policyData, serveData, tsIdentity,
 
 	handleSave: null,
 	handleSaveApply: null,
@@ -478,8 +489,9 @@ return view.extend({
 			return;
 		}
 		return Promise.all(list.map((t, i) => {
-			const st = this.tsStatus.find(x => x.name === t.name) || {};
+			const saved = this.tsStatus.find(x => x.name === t.name) || {};
 			const live = (this.tsLive || []).find(x => x.name === t.name) || null;
+			const st = tsIdentity(live, saved);
 			const self = (live && live.self) || {};
 			const box = E('div', {});
 			const running = live ? live.state === 'Running' : false;
@@ -494,8 +506,8 @@ return view.extend({
 				E('div', { 'class': 'mh-ts-status' }, [
 					mui.row('状态', tsStateLabel(live, st, t)),
 					live && live.error ? mui.row('错误', E('span', { 'class': 'mh-warn', style: 'word-break:break-all' }, live.error)) : '',
-					(live && live.login) || st.login ? mui.row('账号', (live && live.login) || st.login) : '',
-					(live && live.tailnet) || st.tailnet ? mui.row('Tailnet', (live && live.tailnet) || st.tailnet) : '',
+					st.login ? mui.row('账号', st.login) : '',
+					st.tailnet ? mui.row('Tailnet', st.tailnet) : '',
 					self.dnsName ? mui.row('域名', self.dnsName.replace(/\.$/, '')) : (st.magic_dns ? mui.row('MagicDNS', st.magic_dns) : ''),
 					Array.isArray(self.ips) && self.ips.length ? mui.row('Tailnet 地址', self.ips.join('  ')) : '',
 					mui.row('状态目录', st.state_dir || '-')
@@ -627,40 +639,57 @@ return view.extend({
 		const msg = E('p', {}, restart ? '正在重启服务…' : '正在获取登录链接…');
 		const link = E('div', {});
 		const retry = E('div', {});
-		const timers = [];
-		let stream = null, closed = false, url = null;
+		const timers = new Set();
+		let stream = null, closed = false, url = null, poller = null, polling = false;
 		const close = () => {
 			closed = true;
 			if (stream) stream.close();
+			if (poller) poller.close();
 			timers.forEach(t => clearTimeout(t));
+			timers.clear();
 		};
-		const later = (fn, ms) => timers.push(setTimeout(() => { if (!closed) fn(); }, ms));
+		const later = (fn, ms) => {
+			if (closed) return;
+			const timer = setTimeout(() => {
+				timers.delete(timer);
+				if (!closed) fn();
+			}, ms);
+			timers.add(timer);
+		};
 		ui.showModal('登录 Tailscale：' + name, [ msg, link, retry,
 			E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': () => { close(); ui.hideModal(); this.reload(); } }, '关闭') ]) ]);
 		const fail = text => {
+			if (closed) return;
 			if (stream) stream.close();
 			msg.textContent = text;
 			retry.replaceChildren(mui.btn('重启服务后重新获取', () => { close(); this.tsLogin(name, true); }, 'cbi-button-action'));
 		};
 		const done = login => {
+			if (closed) return;
 			close();
 			ui.hideModal();
 			mui.notify('Tailscale 已登录' + (login ? '：' + login : ''));
 			return this.reload();
 		};
 		// 优先看内核实时状态，旧内核退回到读状态文件
-		const poll = () => api.get('/tailscale/' + encodeURIComponent(name), { timeout: 8000 }).then(st => {
-			if (st && st.state === 'Running') return done(st.login);
-			later(poll, 3000);
-		}, () => api.rpc.tailscale().then(r => {
-			const st = ((r && r.ok && r.list) || []).find(x => x.name === name);
-			if (st && st.logged_in) return done(st.login);
-			later(poll, 3000);
-		})).catch(() => later(poll, 3000));
+		const poll = () => {
+			if (closed) return Promise.resolve();
+			return api.get('/tailscale/' + encodeURIComponent(name), { timeout: 8000 }).then(st => {
+				if (st && st.state === 'Running') return done(st.login);
+			}, error => {
+				if (closed || error.status !== 404) return;
+				return api.rpc.tailscale().then(result => {
+					const state = ((result && result.ok && result.list) || []).find(item => item.name === name);
+					if (state && state.logged_in) return done(state.login);
+				});
+			}).catch(() => null);
+		};
+		poller = api.poll(msg, 3000, () => polling ? poll() : null);
 		const copy = () => (navigator.clipboard && window.isSecureContext)
 			? navigator.clipboard.writeText(url).then(() => mui.notify('已复制'), () => mui.notify('复制失败，请手动复制', 'error'))
 			: mui.notify('当前页面不能使用剪贴板，请手动复制链接', 'error');
 		const show = u => {
+			if (closed) return;
 			url = u;
 			if (stream) stream.close();
 			msg.textContent = '在新标签页里登录 Tailscale 账号并授权这台设备，完成后这里会自动更新。';
@@ -671,7 +700,7 @@ return view.extend({
 					mui.btn('复制链接', copy)
 				]));
 			retry.replaceChildren();
-			later(poll, 3000);
+			polling = true;
 		};
 		// 新内核：/tailscale/NAME/login 直接返回登录链接；旧内核（404）退回到从日志里抓链接
 		const viaKernel = () => tsKernelLogin(name, 20).then(st => {
@@ -692,12 +721,13 @@ return view.extend({
 				const m = /go to: (https?:\/\/[^\s"]+)/.exec(p);
 				if (m && !url) show(m[1]);
 				else if (/AuthLoop: state is Running/.test(p)) poll();
-			});
+			}, msg);
 			// 订阅建立后再唤醒 tsnet：它只在第一次连接时启动，登录链接只输出一次
 			later(() => api.get('/proxies/' + encodeURIComponent(name) + '/delay?url=' + encodeURIComponent('http://100.100.100.100') + '&timeout=8000',
 				{ timeout: 12000 }).catch(() => null), 1000);
 			later(() => {
 				if (url) return;
+				polling = true;
 				poll();
 				fail('没有拿到登录链接：tsnet 可能已经在运行。重启服务后再获取一次。');
 			}, 12000);

@@ -37,6 +37,15 @@ function setup(opts) {
 	const calls = { gets: [], service: [], modal: [] };
 	let onLog = null, logged = false;
 	const api = {
+		poll: (root, interval, callback) => {
+			let closed = false, timer;
+			const run = async () => {
+				await callback();
+				if (!closed) timer = setTimeout(run, interval);
+			};
+			timer = setTimeout(run, interval);
+			return { close() { closed = true; clearTimeout(timer); } };
+		},
 		rpc: {
 			status: async () => ({ ok: true, running: opts.running !== false }),
 			service: async a => { calls.service.push(a); return { ok: true }; },

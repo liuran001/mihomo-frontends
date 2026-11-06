@@ -138,16 +138,10 @@ return view.extend({
 		]);
 
 		const root = E('div', { 'class': 'mh' }, [ header.render(), card ]);
-		this.stream = api.stream('/connections?interval=1000', d => this.onFrame(d));
-		this.loadDevices();
-		this.timer = setInterval(() => {
-			if (!document.body.contains(root)) {
-				clearInterval(this.timer);
-				this.stream.close();
-				return;
-			}
-			this.loadDevices();
-		}, 60000);
+		if (this.stream) this.stream.close();
+		if (this.poller) this.poller.close();
+		this.stream = api.stream('/connections?interval=1000', d => this.onFrame(d), root);
+		this.poller = api.poll(root, 60000, () => this.loadDevices());
 		return root;
 	},
 

@@ -1,0 +1,282 @@
+@file:OptIn(kotlin.js.ExperimentalWasmJsInterop::class)
+
+package mihomo
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Refresh
+
+@JsFun("(value) => { const date = new Date(Number(value)); return Number.isFinite(date.getTime()) ? date.toLocaleString() : value; }")
+private external fun messageTime(value: String): String
+
+@Composable
+fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var session by remember { mutableStateOf<JsonObject?>(null) }
+    var battery by remember { mutableStateOf<JsonObject?>(null) }
+    var hotspot by remember { mutableStateOf<JsonObject?>(null) }
+    var messages by remember { mutableStateOf<List<JsonObject>?>(null) }
+    var terminal by remember { mutableStateOf<JsonObject?>(null) }
+    var busy by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    var notice by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var command by remember { mutableStateOf("") }
+    var timeout by remember { mutableStateOf("15") }
+    var configureHotspot by remember { mutableStateOf(false) }
+    var confirmTerminal by remember { mutableStateOf(false) }
+    var confirmHotspot by remember { mutableStateOf<Boolean?>(null) }
+    var editScrcpyPort by remember { mutableStateOf(false) }
+    var editScrcpyQuality by remember { mutableStateOf(false) }
+    val unlocked = session?.boolean("unlocked") == true
+    val idle = busy.isEmpty()
+
+    fun operate(action: String, label: String, payload: JsonObject = json(), accept: (JsonObject) -> Unit = {}) {
+        if (busy.isNotEmpty()) return
+        busy = label
+        error = ""
+        notice = ""
+        scope.launch {
+            try {
+                accept(request("enhanced", json("action" to action, "payload" to payload)))
+                if (action != "status") session = request("enhanced", json("action" to "status"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error = failure.message ?: "设备操作失败"
+                if (error.contains("操作密码") || error.contains("已锁定")) {
+                    session = session?.let { JsonObject(it + json("unlocked" to false)) }
+                    messages = null
+                    terminal = null
+                }
+            } finally {
+                busy = ""
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { operate("status", "读取增强状态…") { session = it } }
+    DisposableEffect(Unit) {
+        onDispose {
+            password = ""
+            messages = null
+            terminal = null
+            command = ""
+        }
+    }
+    Page(title = "设备控制", navigationIcon = { BackIcon(onBack) }, actions = {
+        BarAction(MiuixIcons.Regular.Refresh, "刷新增强状态", enabled = idle) { operate("status", "读取增强状态…") { session = it } }
+    }) {
+        banner(busy, BannerKind.Progress, "busy")
+        banner(error, BannerKind.Error, "error")
+        banner(notice, BannerKind.Success, "notice")
+        val current = session ?: return@Page
+        if (current.boolean("public_access")) item(key = "public") {
+            Caption("当前允许公网来源访问。强烈建议仅在局域网或 Tailscale 使用增强功能。", Tone.warning)
+        }
+        if (!current.boolean("enabled")) {
+            group("尚未启用", "disabled") {
+                Caption("请在手机模块管理器的「网页管理」设置中开启增强功能。开启前必须设置主 WebUI 访问密码。")
+                ArrowRow("网页管理设置") { onNavigate("webui") }
+            }
+            return@Page
+        }
+        if (current.boolean("requires_main")) {
+            group("需要主密码登录", "main-login") {
+                Caption("设备控制必须验证主 WebUI 密码，Tailnet 免密会话不能直接使用增强功能。")
+                ButtonRow { ActionButton("使用主密码登录", primary = true) { enhancedLogin() } }
+            }
+            return@Page
+        }
+        if (!unlocked) {
+            group("解锁设备控制", "unlock") {
+                Caption("输入独立操作密码，解锁有效期 15 分钟。")
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    PasswordField("操作密码", password) { password = it }
+                }
+                ButtonRow {
+                    ActionButton("解锁", primary = true, enabled = idle && password.isNotEmpty()) {
+                        val entered = password
+                        password = ""
+                        operate("unlock", "验证操作密码…", json("password" to entered))
+                    }
+                }
+            }
+            return@Page
+        }
+        group(null, "access") {
+            Caption("信息仅在点击时读取，不在后台轮询。离开页面后清除短信和终端显示内容。")
+            if (current.boolean("has_password")) ButtonRow {
+                ActionButton("立即锁定", enabled = idle) {
+                    messages = null
+                    terminal = null
+                    operate("lock", "锁定中…")
+                }
+            }
+        }
+        group("电量", "battery") {
+            battery?.let { value ->
+                InfoRow("剩余电量", value.string("percent") + "%", valueColor = Tone.success)
+                InfoRow("电源", if (value.boolean("powered")) "已接通电源" else "使用电池")
+                if (value.containsKey("temperature")) InfoRow("电池温度", value.string("temperature") + " °C")
+            }
+            ButtonRow { ActionButton("读取电量", enabled = idle) { operate("battery", "读取电量…") { battery = it } } }
+        }
+        group("最近短信", "sms") {
+            Caption("仅按需读取最近 20 条，不发送或修改短信。短信可能含验证码，请妥善保管操作密码。")
+            ButtonRow {
+                ActionButton("读取最近短信", enabled = idle) { operate("sms", "读取短信…", json("limit" to 20)) { messages = it.objects("messages") } }
+                if (messages != null) ActionButton("清除显示") { messages = null }
+            }
+            if (messages?.isEmpty() == true) Caption("暂无短信")
+        }
+        items(messages.orEmpty(), key = { "sms:" + it.string("id") }) { message ->
+            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth()) {
+                InfoRow(message.string("address"), if (message.string("type") == "1") "收到" else "发出", messageTime(message.string("date")))
+                SelectionContainer { Caption(message.string("body")) }
+            }
+        }
+        group("热点", "hotspot") {
+            val status = hotspot
+            InfoRow("热点状态", when (status?.get("enabled")?.toString()) { "true" -> "开启"; "false" -> "关闭"; else -> "未确认" })
+            status?.get("tethered")?.let { InfoRow("系统网络共享", if (it.toString() == "true") "已启用" else "未启用") }
+            if (status?.boolean("configured") == true) InfoRow("保存的热点", status.string("ssid"), "频段：${status.string("band")}")
+            Caption("通过系统热点与网络共享接口操作，ROM 支持情况不同；拒绝或超时会明确报错。更改热点可能断开当前连接；共享流量策略在「共享与数据面」设置。")
+            ArrowRow("热点配置", "保存名称、WPA2 密码和频段；下次开启时应用", enabled = idle) { configureHotspot = true }
+            ButtonRow {
+                ActionButton("读取状态", enabled = idle) { operate("hotspot", "读取热点状态…") { hotspot = it } }
+                ActionButton("开启", enabled = idle) { confirmHotspot = true }
+                ActionButton("关闭", enabled = idle) { confirmHotspot = false }
+            }
+        }
+        group("终端", "terminal") {
+            Caption("以 root 执行命令；每次执行独立，最长 60 秒。不要在这里启动常驻服务。", Tone.warning)
+            InputField("命令", command, singleLine = false, minLines = 3, maxLines = 8, enabled = idle) { command = it }
+            InputField("超时（秒）", timeout, enabled = idle) { timeout = it }
+            ButtonRow {
+                ActionButton("执行命令", primary = true, enabled = idle && command.isNotBlank()) {
+                    if (timeout.toIntOrNull() !in 1..60) error = "超时须为 1–60 秒" else confirmTerminal = true
+                }
+                if (terminal != null) ActionButton("清除输出") { terminal = null }
+            }
+            terminal?.let { result ->
+                InfoRow("退出码", result.string("errno"))
+                if (result.boolean("truncated")) Caption("输出超过限制，已截断。", Tone.warning)
+                CodeBlock(result.string("stdout") + result.string("stderr").let { if (it.isEmpty()) "" else "\n$it" })
+            }
+        }
+        group("web scrcpy", "scrcpy") {
+            val builtin = current.string("scrcpy_mode", "builtin") == "builtin"
+            val service = current["screen_service"] as? JsonObject
+            SwitchRow("允许屏幕控制入口", current.boolean("scrcpy"), "页面与实时连接均经 WebUI 转发；关闭后断开正在使用的连接", enabled = idle) {
+                operate("scrcpy-set", "保存屏幕入口…", json("enabled" to it))
+            }
+            SwitchRow("使用内置屏幕服务", builtin, "随模块安装，无需 Node、ADB 或另装 ws-scrcpy；更改后停止当前屏幕会话", enabled = idle) {
+                operate("scrcpy-set", "切换屏幕服务…", json("mode" to if (it) "builtin" else "external"))
+            }
+            if (builtin) {
+                InfoRow("内置 scrcpy", if (service?.boolean("installed") == true) "已安装 ${service.string("version")}" else "未安装，请重新安装完整模块")
+                InfoRow("服务状态", if (service?.boolean("running") == true) "正在使用" else "已停止，不占用录屏资源")
+                if (service?.string("last_error")?.isNotEmpty() == true) Caption(service.string("last_error"), Tone.warning)
+                ArrowRow("画质与资源限制", "修改后重新连接生效", value = "${current.string("scrcpy_max_size", "1280")} / ${current.string("scrcpy_fps", "24")} fps", enabled = idle) { editScrcpyQuality = true }
+                Caption("打开后点击「开始连接」才启动录屏；隐藏、关闭页面或退出登录后停止。一次只允许一个会话，最长 15 分钟，无音频，不常驻、不自动重启。")
+            } else {
+                ArrowRow("本机服务端口", "外部服务只应监听 127.0.0.1", value = current.string("scrcpy_port", "8080"), enabled = idle) { editScrcpyPort = true }
+                Caption("兼容已有 ws-scrcpy：设置 WS_SCRCPY_PATHNAME=/enhanced/scrcpy/。外部模式仅管理代理入口，不接管其他服务进程。")
+            }
+            if (current.boolean("scrcpy")) ButtonRow {
+                ActionButton("打开屏幕控制", primary = true, enabled = idle) {
+                    scope.launch {
+                        try {
+                            val url = request("scrcpyUrl").string("url")
+                            Dashboard.openUrl(url) { error = it }
+                        } catch (failure: Exception) { error = failure.message ?: "无法打开屏幕控制" }
+                    }
+                }
+                if (builtin && service?.boolean("running") == true) ActionButton("停止屏幕服务", enabled = idle) {
+                    operate("scrcpy-stop", "停止屏幕服务…") { notice = "已请求停止屏幕会话" }
+                }
+            }
+        }
+    }
+    ConfirmDialog(confirmTerminal, "执行 root 命令", "命令会直接修改本机，确认内容无误后执行。", confirm = "执行", danger = true,
+        onDismiss = { confirmTerminal = false }) {
+        confirmTerminal = false
+        operate("terminal", "执行命令…", json("command" to command, "timeout" to (timeout.toIntOrNull() ?: 15))) { terminal = it }
+    }
+    ConfirmDialog(confirmHotspot != null, "${if (confirmHotspot == true) "开启" else "关闭"}热点", "操作可能断开当前 Wi-Fi 连接。", confirm = "继续", danger = true,
+        onDismiss = { confirmHotspot = null }) {
+        val enabled = confirmHotspot == true
+        confirmHotspot = null
+        operate("hotspot-set", "设置热点…", json("enabled" to enabled)) { hotspot = it; notice = if (enabled) "热点已开启" else "热点已关闭" }
+    }
+    HotspotDialog(configureHotspot, hotspot?.string("ssid").orEmpty(), hotspot?.string("band", "2") ?: "2", { configureHotspot = false }) { config ->
+        configureHotspot = false
+        operate("hotspot-set", "保存热点配置…", json("config" to config)) { hotspot = it; notice = "热点配置已保存，下次开启时应用" }
+    }
+    EditDialog(editScrcpyPort, "web scrcpy 端口", session?.string("scrcpy_port", "8080") ?: "8080", summary = "指向本机已安装的 ws-scrcpy 服务，不能与 WebUI 端口相同。", onDismiss = { editScrcpyPort = false }) { value ->
+        val port = value.toIntOrNull()
+        if (port == null || port !in 1..65535) return@EditDialog "端口须为 1–65535"
+        editScrcpyPort = false
+        operate("scrcpy-set", "保存屏幕服务端口…", json("enabled" to (session?.boolean("scrcpy") == true), "port" to port))
+        null
+    }
+    EditDialog(editScrcpyQuality, "屏幕画质", "${session?.string("scrcpy_max_size", "1280") ?: "1280"},${session?.string("scrcpy_fps", "24") ?: "24"},${session?.string("scrcpy_bit_rate", "2000000") ?: "2000000"}",
+        summary = "最长边 640–1920、帧率 5–60、码率 256000–8000000，以英文逗号分隔。建议 1280,24,2000000；更低参数更省电。", onDismiss = { editScrcpyQuality = false }) { value ->
+        val parts = value.split(',').map { it.trim().toIntOrNull() }
+        if (parts.size != 3 || parts[0] !in 640..1920 || parts[1] !in 5..60 || parts[2] !in 256000..8000000) return@EditDialog "请输入有效的最长边、帧率和码率"
+        editScrcpyQuality = false
+        operate("scrcpy-set", "保存屏幕画质…", json("max_size" to parts[0], "fps" to parts[1], "bit_rate" to parts[2]))
+        null
+    }
+}
+
+@Composable
+private fun HotspotDialog(show: Boolean, initialSSID: String, initialBand: String, onDismiss: () -> Unit, onSave: (JsonObject) -> Unit) {
+    var ssid by remember(show) { mutableStateOf(initialSSID) }
+    var password by remember(show) { mutableStateOf("") }
+    var band by remember(show) { mutableStateOf(initialBand.ifEmpty { "2" }) }
+    var error by remember(show) { mutableStateOf("") }
+    Dialog(show, "热点配置", "密码不会回显；保存配置不会立即断开热点。", onDismissRequest = onDismiss) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            InputField("热点名称", ssid) { ssid = it }
+            PasswordField("WPA2 密码", password) { password = it }
+            DropdownRow("频段", listOf("2.4 GHz", "5 GHz", "自动"), listOf("2", "5", "any").indexOf(band).coerceAtLeast(0)) { band = listOf("2", "5", "any")[it] }
+            if (error.isNotEmpty()) Text(error, color = Tone.danger, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton("取消", onClick = onDismiss, modifier = Modifier.weight(1f))
+                TextButton("保存", modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
+                    error = when {
+                        ssid.encodeToByteArray().size !in 1..32 || ssid.any { it == '\n' || it == '\r' || it == '\u0000' } -> "名称须为 1–32 字节"
+                        password.length !in 8..63 || password.any { it.code !in 32..126 } -> "密码须为 8–63 个 ASCII 字符"
+                        else -> { onSave(json("ssid" to ssid, "password" to password, "band" to band)); "" }
+                    }
+                })
+            }
+        }
+    }
+}

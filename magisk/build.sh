@@ -92,14 +92,29 @@ done
 cp -R -- "$module_root/scripts" "$stage/scripts"
 mkdir -- "$stage/webroot"
 cp -R -- "$web_dist/." "$stage/webroot/"
+command -v gzip >/dev/null 2>&1 || fail '缺少 gzip，无法预压缩 WebUI'
+find "$stage/webroot" -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' -o -name '*.otf' -o -name '*.ttf' -o -name '*.map' -o -name '*.txt' \) -exec sh -c '
+  for asset do gzip -n -9 -c "$asset" > "$asset.gz" || exit 1; done
+' sh {} +
 # 网页管理服务：静态链接的 Linux 程序，customize.sh 按 ARCH 保留其一
 command -v go >/dev/null 2>&1 || fail '缺少 go，无法构建 mihomo-webd'
+(
+  cd -- "$module_root/webd"
+  go run . assets -data "$module_root/scrcpy-assets/out"
+)
+mkdir -p "$stage/bin/scrcpy"
+cp "$module_root/webd/THIRD-PARTY-NOTICES.txt" "$stage/bin/WEBD-NOTICES.txt"
+for asset in scrcpy-server-v5.0.1.jar SCRCPY-LICENSE.txt jmuxer.min.js JMUXER-LICENSE.txt; do
+  cp "$module_root/scrcpy-assets/out/$asset" "$stage/bin/scrcpy/$asset"
+done
 for target in arm64:arm64 x64:amd64; do
   (
     cd -- "$module_root/webd"
     GOOS=linux GOARCH=${target#*:} CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$stage/bin/${target%%:*}/mihomo-webd" .
   )
 done
+JAVA_HOME=${JAVA_HOME:-} sh "$module_root/device-helper/build.sh" "$stage/device-helper"
+cp "$stage/device-helper/device-control.jar" "$stage/bin/device-control.jar"
 (
   cd -- "$stage"
   ZIPOPT='' zip -q -r -X "$stage/module.zip" module.prop customize.sh service.sh post-fs-data.sh scripts webroot bin

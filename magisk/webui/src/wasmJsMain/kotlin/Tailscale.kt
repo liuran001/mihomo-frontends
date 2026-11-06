@@ -109,6 +109,7 @@ internal object TailscaleState {
     var loginMessage by mutableStateOf("")
     var loginBusy by mutableStateOf(false)
     var loginMissed by mutableStateOf(false)
+    private var loginJob: Job? = null
     private var poll: Job? = null
 
     fun load(force: Boolean = false) {
@@ -117,10 +118,9 @@ internal object TailscaleState {
     }
 
     private suspend fun refresh() {
-        val content = request("configRead").string("content")
-        val schema = request("configSchema", json("content" to content))
-        val status = request("tailscaleStatus").objects("list").associateBy { it.string("name") }
-        source = content
+        val schema = request("tailscaleRead")
+        val status = schema.objects("list").associateBy { it.string("name") }
+        source = schema.string("content")
         template = schema.objects("tailscaleFields").map { it.field() }
         entries = schema.objects("tailscale").map { item ->
             val name = item.string("name")
@@ -219,13 +219,14 @@ internal object TailscaleState {
     }
 
     fun startLogin(name: String, restart: Boolean = false, connect: Boolean = false) {
+        loginJob?.cancel()
         poll?.cancel()
         loginFor = name
         loginUrl = ""
         loginQr = emptyList()
         loginMissed = false
         loginBusy = true
-        scope.launch {
+        loginJob = scope.launch {
             try {
                 val running = request("status").boolean("running")
                 if (restart || !running) {
@@ -263,7 +264,7 @@ internal object TailscaleState {
                 loginMissed = true
                 loginMessage = failure.message ?: "获取登录链接失败"
             } finally {
-                loginBusy = false
+                if (loginJob == coroutineContext[Job]) loginBusy = false
             }
         }
     }
@@ -272,6 +273,7 @@ internal object TailscaleState {
         poll = scope.launch {
             repeat(200) {
                 delay(3000)
+                awaitWebuiVisible()
                 if (loginFor != name) return@launch
                 val logged = try {
                     request("tailscaleStatus").objects("list").firstOrNull { it.string("name") == name }?.boolean("loggedIn") == true
@@ -304,8 +306,14 @@ internal object TailscaleState {
     }
 
     fun closeLogin() {
+        loginJob?.cancel()
+        loginJob = null
         poll?.cancel()
+        poll = null
         loginFor = null
+        loginBusy = false
+        loginUrl = ""
+        loginQr = emptyList()
     }
 
     fun open(url: String) {
@@ -339,6 +347,7 @@ fun TailscalePage(onBack: () -> Unit) {
     var adding by remember { mutableStateOf(false) }
     var serving by remember { mutableStateOf<TailscaleEntry?>(null) }
     LaunchedEffect(Unit) { state.load(force = true) }
+    DisposableEffect(state) { onDispose { state.closeLogin() } }
     Page(title = "Tailscale", navigationIcon = { BackIcon(onBack) }) {
         banner(state.busy, BannerKind.Progress, "busy")
         banner(state.error, BannerKind.Error, "error")
@@ -359,7 +368,11 @@ fun TailscalePage(onBack: () -> Unit) {
                 val (label, tone) = statusLabel(entry)
                 InfoRow("状态", label, valueColor = tone, summary = statusSummary(entry))
                 if (entry.problem.isNotEmpty()) Caption(entry.problem, Tone.warning)
-                if (entry.login.isNotEmpty()) InfoRow("账号", entry.login)
+                if (entry.login.isNotEmpty()) {
+                    val liveIdentity = entry.kernel && entry.state != "NotStarted"
+                    InfoRow(if (liveIdentity) "设备所属账号" else "已保存的登录账号", entry.login,
+                        summary = if (liveIdentity) "来自内核上报的本机节点所属用户，不是当前浏览器账号" else "来自本机状态文件的当前登录资料；连接后以内核返回为准")
+                }
                 if (entry.tailnet.isNotEmpty()) InfoRow("Tailnet", entry.tailnet)
                 if (entry.dnsName.isNotEmpty()) InfoRow("域名", entry.dnsName)
                 else if (entry.magicDns.isNotEmpty()) InfoRow("MagicDNS", entry.magicDns)
@@ -384,7 +397,7 @@ fun TailscalePage(onBack: () -> Unit) {
             }
         }
         item(key = "note") {
-            Caption("访问 Tailscale 里其它设备（100.x.x.x 地址）的流量会自动走 Tailscale。登录状态会保存下来，重启后不用重新登录。")
+            Caption("访问 Tailscale 里其它设备（100.x.x.x 地址）的流量会自动走 Tailscale。登录状态会保存下来，重启后不用重新登录。设备所属账号由注册信息决定，使用他人提供的 auth key 或已有登录状态时可能显示该账号；更换浏览器账号或修改 auth key 不会自动切换设备身份。")
         }
     }
     AddSheet(adding, onDismiss = { adding = false })
@@ -398,7 +411,7 @@ fun TailscalePage(onBack: () -> Unit) {
         removing = null
     }
     ConfirmDialog(show = leaving != null, title = "退出登录",
-        summary = "删除 ${leaving?.name.orEmpty()} 的登录状态并重启服务。设备会从 Tailnet 中离线，之后需要重新登录。", confirm = "退出登录", danger = true,
+        summary = if (leaving?.kernel == true) "通过内核退出 ${leaving?.name.orEmpty()} 的登录，不重启代理服务。设备会从 Tailnet 中离线，之后需要重新登录。" else "删除 ${leaving?.name.orEmpty()} 的登录状态并重启服务。设备会从 Tailnet 中离线，之后需要重新登录。", confirm = "退出登录", danger = true,
         onDismiss = { leaving = null }) {
         leaving?.let { state.logout(it.name) }
         leaving = null

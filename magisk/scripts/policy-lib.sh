@@ -13,7 +13,8 @@ policy_load() {
   policy_interfaces=$(setting_get tethering_interfaces "$DEFAULT_INTERFACES" "$policy_source")
   policy_packages=$(decode_value "$(setting_get bypass_packages_b64 '' "$policy_source")") || return 1
   policy_wifi_mode=$(setting_get wifi_mode off "$policy_source")
-  policy_ssids=$(decode_value "$(setting_get wifi_ssids_b64 '' "$policy_source")") || return 1
+  policy_ssids_b64=$(setting_get wifi_ssids_b64 '' "$policy_source")
+  policy_ssids=$(decode_value "$policy_ssids_b64") || return 1
 }
 
 current_ssid() {
@@ -25,13 +26,35 @@ current_ssid() {
 }
 
 policy_allowed() {
+  current_wifi_ssid=''
+  [ "$policy_wifi_mode" != off ] || return 0
   current_wifi_ssid=$(current_ssid)
+  policy_decision=false
   case "$policy_wifi_mode" in
-    off) return 0 ;;
-    only) [ -n "$current_wifi_ssid" ] && printf '%s\n' "$policy_ssids" | grep -Fxq -e "$current_wifi_ssid" ;;
-    exclude) [ -z "$current_wifi_ssid" ] || ! printf '%s\n' "$policy_ssids" | grep -Fxq -e "$current_wifi_ssid" ;;
+    only) if [ -n "$current_wifi_ssid" ] && printf '%s\n' "$policy_ssids" | grep -Fxq -e "$current_wifi_ssid"; then policy_decision=true; fi ;;
+    exclude) if [ -z "$current_wifi_ssid" ] || ! printf '%s\n' "$policy_ssids" | grep -Fxq -e "$current_wifi_ssid"; then policy_decision=true; fi ;;
     *) return 1 ;;
   esac
+  policy_snapshot=$(printf '%s\n%s\n%s\n+%s' "$policy_wifi_mode" "$policy_ssids_b64" "$policy_decision" "$(printf '%s' "$current_wifi_ssid" | base64 | tr -d '\r\n')")
+  if [ -d "$RUN_DIR" ] && [ "$(cat "$RUN_DIR/policy-status" 2>/dev/null)" != "$policy_snapshot" ]; then
+    atomic_text "$RUN_DIR/policy-status" "$policy_snapshot" || :
+  fi
+  [ "$policy_decision" = true ]
+}
+
+policy_cached_status() {
+  allowed=null
+  current_wifi_ssid=''
+  [ "$policy_wifi_mode" != off ] || { allowed=true; return 0; }
+  [ -f "$RUN_DIR/policy-status" ] || return 0
+  {
+    IFS= read -r cached_mode && IFS= read -r cached_ssids && IFS= read -r cached_allowed && IFS= read -r cached_current
+  } <"$RUN_DIR/policy-status" || return 0
+  [ "$cached_mode" = "$policy_wifi_mode" ] && [ "$cached_ssids" = "$policy_ssids_b64" ] || return 0
+  case "$cached_allowed" in true|false) ;; *) return 0 ;; esac
+  case "$cached_current" in +*) ;; *) return 0 ;; esac
+  current_wifi_ssid=$(decode_value "${cached_current#+}") || return 0
+  allowed=$cached_allowed
 }
 
 policy_render() (
@@ -95,9 +118,17 @@ start_core() {
     tool setsid sh "$SCRIPTS/policy-launch.sh" </dev/null >>"$LOG_FILE" 2>&1
   ) </dev/null >/dev/null 2>&1 &
   start_wait=0
+  readiness_endpoint=/ebpf/summary
   while [ "$start_wait" -lt "$START_TIMEOUT" ]; do
     if pid_alive; then
-      ready=$(tool curl -fsS --max-time 2 --unix-socket "$CONTROL_SOCKET" http://localhost/ebpf 2>/dev/null)
+      ready=$(tool curl -sS --max-time 2 --unix-socket "$CONTROL_SOCKET" "http://localhost$readiness_endpoint" -w '\n%{http_code}' 2>/dev/null)
+      readiness_code=$(printf '%s\n' "$ready" | tail -n 1)
+      if [ "$readiness_endpoint" = /ebpf/summary ] && [ "$readiness_code" = 404 ]; then
+        readiness_endpoint=/ebpf
+        ready=''
+      elif [ "$readiness_code" != 200 ]; then
+        ready=''
+      fi
       if printf '%s' "$ready" | grep -Eq '"inbounds"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'; then
         pid_alive && { module_status running; return 0; }
       fi
@@ -108,7 +139,7 @@ start_core() {
     sleep 1
   done
   stop_core || return 1
-  echo "启动失败：eBPF listener 未就绪（/ebpf 必须非空），见 $LOG_FILE" >&2
+  echo "启动失败：eBPF listener 未就绪（/ebpf/summary 必须非空），见 $LOG_FILE" >&2
   return 1
 }
 

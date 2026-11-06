@@ -11,6 +11,7 @@ case "$ARCH" in
 esac
 
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+set_perm_recursive "$MODPATH/bin" 0 0 0755 0644
 
 # 网页管理服务：只保留当前架构的程序
 if [ -f "$MODPATH/bin/$ARCH/mihomo-webd" ]; then

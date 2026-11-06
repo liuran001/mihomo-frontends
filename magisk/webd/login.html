@@ -40,25 +40,36 @@
   const error = document.getElementById('error');
   function next() {
     const value = new URLSearchParams(location.search).get('next') || '/';
-    // 只跳回本站路径
-    return value.startsWith('/') && !value.startsWith('//') ? value : '/';
+    if (!value.startsWith('/') || value.startsWith('//') || /[\\\x00-\x1f\x7f]/.test(value)) return '/';
+    try {
+      const target = new URL(value, location.origin);
+      return target.origin === location.origin ? target.pathname + target.search + target.hash : '/';
+    } catch { return '/'; }
   }
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     button.disabled = true;
     error.textContent = '';
+    const controller = new AbortController();
+    let timer;
     try {
-      const response = await fetch('/api/login', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'X-Mihomo-Request': '1' },
-        body: JSON.stringify({ password: document.getElementById('password').value }),
-      });
-      const body = await response.json().catch(() => ({}));
+      const attempt = async () => {
+        const response = await fetch('/api/login', {
+          method: 'POST', credentials: 'same-origin', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', 'X-Mihomo-Request': '1' },
+          body: JSON.stringify({ password: document.getElementById('password').value }),
+        });
+        return { response, body: await response.json().catch(() => ({})) };
+      };
+      const { response, body } = await Promise.race([attempt(), new Promise((_, reject) => {
+        timer = setTimeout(() => { reject(new Error('登录请求超时，请重试')); controller.abort(); }, 20000);
+      })]);
       if (response.ok && body.ok) { location.replace(next()); return; }
       error.textContent = body.error || ('登录失败（HTTP ' + response.status + '）');
     } catch (failure) {
       error.textContent = '无法连接：' + failure.message;
     } finally {
+      clearTimeout(timer);
       button.disabled = false;
     }
   });

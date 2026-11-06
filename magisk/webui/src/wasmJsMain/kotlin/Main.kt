@@ -4,14 +4,20 @@ package mihomo
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -75,6 +81,23 @@ private external fun bridgeRequest(operation: String, payload: String, success: 
 
 @JsFun("() => { if (window.mihomoReady) window.mihomoReady(); }")
 private external fun ready()
+
+@JsFun("() => location.hash === '#enhanced' ? 'enhanced' : 'home'")
+private external fun initialRoute(): String
+
+@JsFun("() => { location.href = '/login?next=%2F%23enhanced'; }")
+internal external fun enhancedLogin()
+
+@JsFun("() => document.visibilityState !== 'hidden'")
+internal external fun webuiVisible(): Boolean
+
+@JsFun("(done) => { if (document.visibilityState !== 'hidden') { done(); return () => {}; } const listener = () => { if (document.visibilityState !== 'hidden') { document.removeEventListener('visibilitychange', listener); done(); } }; document.addEventListener('visibilitychange', listener); return () => document.removeEventListener('visibilitychange', listener); }")
+private external fun onWebuiVisible(done: () -> Unit): () -> Unit
+
+internal suspend fun awaitWebuiVisible() = suspendCancellableCoroutine<Unit> { continuation ->
+    val cancel = onWebuiVisible { if (continuation.isActive) continuation.resume(Unit) }
+    continuation.invokeOnCancellation { cancel() }
+}
 
 @JsFun("(message) => { const text = document.getElementById('loading-message'); if (text) text.textContent = message; const retry = document.getElementById('reload'); if (retry) retry.hidden = false; }")
 private external fun fontFailure(message: String)
@@ -158,12 +181,16 @@ fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier, l
 private val tabs = listOf("home" to "首页", "proxies" to "代理", "settings" to "设置")
 
 /** 子页面（压栈显示，带返回）。 */
-private val subPages = setOf("connections", "profile", "core", "config", "backups", "logs", "setup", "tailscale", "webui", "network", "substore")
+private val subPages = setOf("connections", "profile", "core", "config", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced")
 
 private class Navigator {
     var tab by mutableStateOf("home")
     val stack = mutableStateListOf<String>()
     val current: String get() = stack.lastOrNull() ?: tab
+
+    init {
+        if (initialRoute() == "enhanced") stack.add("enhanced")
+    }
 
     fun go(route: String) {
         when {
@@ -227,6 +254,42 @@ private fun MihomoApp() {
 
 @Composable
 private fun AppShell(navigator: Navigator) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= 1000.dp
+        val contentWidth = if (wide) (maxWidth - 216.dp).coerceAtMost(1240.dp) else maxWidth.coerceAtMost(720.dp)
+        CompositionLocalProvider(LocalWideLayout provides wide, LocalPageWidth provides contentWidth) {
+            Row(Modifier.fillMaxSize()) {
+                if (wide) DesktopNavigation(navigator)
+                Box(Modifier.weight(1f).fillMaxHeight()) { AppContent(navigator, wide) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DesktopNavigation(navigator: Navigator) {
+    val links = tabs + listOf("connections" to "连接", "logs" to "日志", "tailscale" to "Tailscale", "webui" to "网页管理", "enhanced" to "设备控制")
+    Column(Modifier.width(216.dp).fillMaxHeight().background(MiuixTheme.colorScheme.surfaceContainer).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("mihomo", fontWeight = FontWeight.Bold, fontSize = 26.sp, color = MiuixTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 24.dp))
+        for ((route, title) in links) {
+            val selected = navigator.current == route
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .background(if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f) else androidx.compose.ui.graphics.Color.Transparent)
+                .clickable(role = androidx.compose.ui.semantics.Role.Button) { navigator.go(route) }
+                .padding(horizontal = 16.dp, vertical = 14.dp)) {
+                Text(title, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface)
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Text("本机 · 局域网 · Tailnet", fontSize = 12.sp, color = Tone.muted, modifier = Modifier.padding(12.dp))
+    }
+}
+
+@Composable
+private fun AppContent(navigator: Navigator, wide: Boolean) {
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val route = navigator.current
@@ -246,11 +309,12 @@ private fun AppShell(navigator: Navigator) {
                     "substore" -> SubStorePage(onBack = back)
                     "webui" -> WebUiPage(onBack = back, onNavigate = navigator::go)
                     "network" -> NetworkPage(onBack = back, onNavigate = navigator::go)
+                    "enhanced" -> EnhancedPage(onBack = back, onNavigate = navigator::go)
                     "setup" -> SetupWizard(firstRun = false) { navigator.back(); LiveOverview.invalidate(); ProfileState.invalidate() }
                 }
             }
         }
-        if (navigator.stack.isEmpty()) {
+        if (!wide && navigator.stack.isEmpty()) {
             NavigationBar(defaultWindowInsetsPadding = false) {
                 val icons = listOf(MiuixIcons.Regular.Home, MiuixIcons.Regular.Tune, MiuixIcons.Regular.Settings)
                 tabs.forEachIndexed { index, (route, title) ->

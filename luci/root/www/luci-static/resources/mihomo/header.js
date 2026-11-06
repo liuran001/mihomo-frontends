@@ -24,6 +24,8 @@ return baseclass.extend({
 
 	// opts.onStatus(status)：每次刷新服务状态后回调，页面据此显示“服务未运行”等提示；opts.setup：当前是向导页
 	render(opts) {
+		if (this.poller) this.poller.close();
+		if (this.unsubscribe) this.unsubscribe();
 		this.opts = opts || {};
 		const pill = E('span', { 'class': 'mh-pill' }, '读取中');
 		const meta = E('span', { 'class': 'mh-meta' }, '');
@@ -52,17 +54,14 @@ return baseclass.extend({
 			banner
 		]);
 
-		api.onState(() => this.updateBanner());
-		this.refresh();
-		this.timer = setInterval(() => {
-			if (!document.body.contains(this.root)) return clearInterval(this.timer);
-			this.refresh();
-		}, 5000);
+		this.unsubscribe = api.onState(() => this.updateBanner());
+		this.poller = api.poll(this.root, 5000, () => this.refresh());
 		return this.root;
 	},
 
 	refresh() {
-		return api.rpc.status().then(st => {
+		if (this.refreshing) return this.refreshing;
+		this.refreshing = api.rpc.status().then(st => {
 			this.status = st;
 			const { pill, meta, toggle } = this.els;
 			pill.className = 'mh-pill ' + (st.running ? 'on' : 'off');
@@ -70,18 +69,17 @@ return baseclass.extend({
 			meta.textContent = [ st.version, st.running && st.uptime != null ? '已运行 ' + mui.fmtDuration(st.uptime) : null,
 				st.running && st.rss_kb ? '内存 ' + mui.fmtBytes(st.rss_kb * 1024) : null ].filter(Boolean).join(' · ');
 			toggle.textContent = st.running ? '停止' : '启动';
-			if (st.running)
-				api.get('/configs').then(c => this.showMode(c && c.mode), () => this.showMode(null));
-			else
-				this.showMode(null);
-			api.dashboard().then(d => this.showDashboard(d));
+			const mode = st.running ? api.get('/configs').then(c => this.showMode(c && c.mode), () => this.showMode(null)) : Promise.resolve(this.showMode(null));
+			const dashboard = api.dashboard().then(d => this.showDashboard(d));
 			this.updateBanner();
 			if (this.opts.onStatus) this.opts.onStatus(st);
+			return Promise.all([mode, dashboard]);
 		}, e => {
 			this.els.pill.className = 'mh-pill off';
 			this.els.pill.textContent = '状态未知';
 			this.els.meta.textContent = e.message;
-		});
+		}).finally(() => { this.refreshing = null; });
+		return this.refreshing;
 	},
 
 	showDashboard(d) {

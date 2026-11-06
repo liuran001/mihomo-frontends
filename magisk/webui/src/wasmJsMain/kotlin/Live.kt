@@ -321,14 +321,14 @@ internal object LiveOverview {
         controllerError = versionResult.error
         if (versionResult.value != null) controllerVersion = versionResult.value.liveText("version").ifBlank { "未知版本" }
         pollTraffic()
-        memoryInUse = liveCapture { liveControllerRead("/memory") }.value?.liveNumber("inuse")
     }
 
     suspend fun pollTraffic() {
-        val traffic = liveCapture { liveControllerRead("/connections") }.value ?: return
+        val traffic = liveCapture { liveControllerRead("/connections/summary") }.value ?: return
         trafficUp = traffic.liveNumber("uploadTotal")
         trafficDown = traffic.liveNumber("downloadTotal")
-        connectionCount = (traffic["connections"] as? JsonArray)?.size ?: 0
+        connectionCount = traffic.liveNumber("connectionCount")?.toInt()
+        memoryInUse = traffic.liveNumber("memory")
     }
 
     fun refresh() = liveRun("刷新概览中…", feedback) { load() }
@@ -398,7 +398,7 @@ internal object LiveProxies {
             readDelays(proxies)
             nodes = proxies.mapNotNull { (name, element) ->
                 val proxy = element as? JsonObject ?: return@mapNotNull null
-                name to LiveNode(proxy.liveText("type"), proxy.liveBoolean("udp") == true)
+                name to LiveNode(proxy.liveText("type"), proxy.liveBoolean("udp") == true, proxy.liveText("icon"))
             }.toMap()
             groups = proxies.mapNotNull { (name, element) ->
                 val proxy = element as? JsonObject ?: return@mapNotNull null
@@ -488,7 +488,7 @@ internal object LiveProxies {
     }
 }
 
-internal data class LiveNode(val type: String, val udp: Boolean)
+internal data class LiveNode(val type: String, val udp: Boolean, val icon: String = "")
 
 internal data class LiveConnection(val key: String, val value: JsonObject)
 

@@ -62,6 +62,16 @@ case "$1" in
     out=$(webd_cli passwd "$2") || { printf '%s\n' "$out"; exit 1; }
     printf '%s\n' "$out"
     ;;
+  enhanced-set)
+    [ "$#" -eq 2 ] || fail '参数无效'
+    out=$(webd_cli enhanced-set "$2") || { printf '%s\n' "$out"; exit 1; }
+    reconcile false
+    status
+    ;;
+  enhanced-request)
+    [ "$#" -eq 3 ] || fail '参数无效'
+    webd_cli enhanced-request -data "$DATA" "$2" "$3"
+    ;;
   start) webd_start || exit 1; status ;;
   stop) webd_stop; status ;;
   restart) webd_stop; webd_start || exit 1; status ;;

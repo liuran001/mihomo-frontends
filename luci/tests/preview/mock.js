@@ -205,6 +205,25 @@ function startController(port, secret) {
 		let mm;
 		if (m === 'GET' && p === '/configs') return send(res, 200, configs);
 		if (m === 'PATCH' && p === '/configs') { Object.assign(configs, await readBody(req)); return send(res, 204); }
+		if (m === 'GET' && p === '/connections/summary') return send(res, 200, {
+			connectionCount: conns.length, uploadTotal: Math.round(totals.up), downloadTotal: Math.round(totals.down), memory: 58e6
+		});
+		if (m === 'GET' && p === '/overview') {
+			const target = configs.mode === 'direct' ? 'DIRECT' : configs.mode === 'global' ? 'GLOBAL' : (rules.filter(rule => rule.type === 'Match').pop() || {}).proxy || 'GLOBAL';
+			const chain = [];
+			let current = target, smart = false;
+			while (current && world.proxies[current] && chain.length < 32 && !chain.includes(current)) {
+				chain.push(current);
+				const proxy = world.proxies[current];
+				if (proxy.type === 'Smart') { smart = true; break; }
+				if (proxy.type === 'LoadBalance') break;
+				current = proxy.now;
+			}
+			const providers = Object.fromEntries(Object.entries(world.providers).map(([name, provider]) => [name, {
+				name, vehicleType: provider.vehicleType, count: provider.proxies.length, updatedAt: provider.updatedAt, subscriptionInfo: provider.subscriptionInfo
+			}]));
+			return send(res, 200, { exit: { chain, smart }, providers });
+		}
 		if (m === 'GET' && p === '/proxies') return send(res, 200, { proxies: world.proxies });
 		if ((mm = p.match(/^\/proxies\/(.+)\/delay$/)) && m === 'GET') return send(res, 200, { delay: retest(mm[1]) });
 		if ((mm = p.match(/^\/proxies\/(.+)$/))) {
@@ -233,6 +252,9 @@ function startController(port, secret) {
 		if (m === 'GET' && p === '/rules') return send(res, 200, { rules });
 		if (m === 'PATCH' && p === '/rules/disable') { const b = (await readBody(req)) || {}; for (const k in b) if (rules[k]) rules[k].extra.disabled = !!b[k]; return send(res, 204); }
 		if (m === 'GET' && p === '/ebpf') return send(res, 200, ebpf);
+		if (m === 'GET' && p === '/ebpf/summary') return send(res, 200, {
+			inbounds: ebpf.inbounds.map(({ resources, ...inbound }) => inbound)
+		});
 		if (m === 'DELETE' && p === '/connections') { conns = []; return send(res, 204); }
 		if ((mm = p.match(/^\/connections\/(.+)$/)) && m === 'DELETE') { conns = conns.filter(c => c.id !== mm[1]); return send(res, 204); }
 		if (m === 'POST' && /^\/cache\/(dns|smart)\/flush$/.test(p)) return send(res, 204);

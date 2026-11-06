@@ -2,13 +2,15 @@
 . "${0%/*}/common.sh"
 . "$SCRIPTS/policy-lib.sh"
 
-lock_backend || exit 1
-trap unlock_backend EXIT
+if [ "$1" != status ]; then
+  lock_backend || exit 1
+  trap unlock_backend EXIT
+fi
 
 case "$1" in
   status)
     policy_load || exit 1
-    allowed=false; policy_allowed && allowed=true
+    policy_cached_status
     desired=$(cat "$INTENT" 2>/dev/null)
     case "$desired" in manual|auto) ;; *) desired=stopped ;; esac
     module_enabled || desired=stopped
@@ -19,9 +21,7 @@ case "$1" in
       uptime=null
       case "$started" in ''|*[!0-9]*) ;; *) uptime=$(( $(date +%s) - started )); [ "$uptime" -ge 0 ] || uptime=null ;; esac
       printf '{"ok":true,"running":true,"pid":%s,"rss_kb":%s,"uptime":%s,%s}\n' "$running_pid" "${rss:-null}" "$uptime" "$status_policy"
-      module_status running
     else
-      if [ "$allowed" = false ] && [ "$desired" != stopped ]; then module_status paused; else module_status stopped; fi
       printf '{"ok":true,"running":false,"pid":null,"rss_kb":null,"uptime":null,%s}\n' "$status_policy"
     fi
     ;;

@@ -99,3 +99,160 @@ Same device and core. `config.yaml` and `settings.ini` were backed up to `HyperO
 - UI on device: Settings → Tailscale shows the outbound; 网页登录 without a fresh tsnet shows the restart hint, 重启服务后重新获取 shows the QR code and URL, 在浏览器打开 starts `com.android.browser` with the URL.
 
 Not covered: completing a real Tailscale account login (needs the user's account), traffic to Tailnet peers after login, and the LuCI flow on a router (covered by backend tests with the real core and a frontend unit test only).
+
+## Web management loading and identity regressions (2026-11-05)
+
+- JavaScript regressions cover session, logout and script requests that stall before headers or during JSON decoding, with and without AbortController. The deadline settles the bridge independently of transport cancellation; expired sessions redirect to login, and failed logout does not report success.
+- Tailscale refresh reads and parses the configuration once, builds only Tailscale fields, and skips controller/state requests when there are no Tailscale outbounds. Running outbounds use live identity only; missing login data and NeedsLogin no longer inherit an old account from disk. NotStarted and missing live outbounds retain the current saved profile, selected by `_current-profile`, not the first profile.
+- Synthetic desktop benchmark (204,251-byte YAML, 500 rule providers, 5,000 rules, one Tailscale outbound): the full schema took 921–1,313 ms per call; Tailscale-only extraction took 43–61 ms. The old refresh built the full schema twice. This is not a phone timing measurement.
+- `webui-loading-smoke.cjs` uses the production UI and preview backend with both `tailscaleRead` and `webuiSession` deliberately left pending. It verifies that refresh sends another status request, the port editor opens, and pending secondary requests are not duplicated. Run the preview server, then `WEBUI_URL=http://127.0.0.1:8790/ node magisk/tests/webui-loading-smoke.cjs`; `PLAYWRIGHT_MODULE` and `CHROME_PATH` may select an existing installation.
+- No Android device was connected during this regression work. Device ownership, actual installed core responses, OEM WebView behavior and switching a real Tailscale account are not verified; no device login state or network settings were modified.
+
+## Control-plane isolation, enhanced controls and resource review (2026-11-06)
+
+This pass runs on desktop Linux/Windows with mocked Android services. Earlier AVD results in this file do not validate the new enhanced controls or establish a phone power measurement.
+
+### Core regressions
+
+- A non-consuming log subscriber reproduced a blocked producer with the old implementation. The regression publishes 5,000 events without draining the subscriber; the updated log-only lossy observable completes without waiting for the consumer. Ordinary observables retain reliable delivery, local logging retains the configured level, and info subscriptions no longer turn on debug formatting.
+- Tailscale status reads a small independent snapshot, not the startup mutex or LocalAPI/WireGuard status. Lock-contention tests verify reads remain available while startup is blocked; cancelled startup waiters return without starting duplicate backends. The existing IPN watcher supplies initial identity and subsequent self changes. Account selection matches `Self.User` to `UserProfile.ID`, and NeedsLogin clears stale identity.
+- Core tests: `SKIP_INTEROP_TEST=1 go test -tags 'with_gvisor with_ebpf' -timeout 180s ./...` passes (89 packages with tests, 106 without). The flag skips the external VMess interoperability suite. A previous concurrent run hit an HTTP/2 SETTINGS timeout in the unrelated Trojan/Reality/gRPC test; the isolated retry and final whole-tree run pass. The changed outbound, provider, observable, log, route, statistic, eBPF and listener packages also pass `-race`; relevant `go vet` checks pass.
+- Desktop microbenchmarks: Tailscale status approximately 393 ns/op and 392 B/op; connection summaries for 0, 1,000 and 10,000 records have zero allocations and approximately 34–87 ns/op. These are request-helper measurements, not Android end-to-end latency or energy savings.
+
+### Frontend and backend checks
+
+- Production `wasmJsBrowserDistribution` builds successfully with Kotlin 2.4.20, Compose 1.12.0 and Miuix 0.9.4. The five bridge/config/onboarding/frontend/login JavaScript suites pass all 188 tests. `magisk/webd` passes its full Go race suite and `go vet`.
+- Shell checks pass: 112 backend policy checks; real stale/foreign PID and inherited descriptor checks; mocked core readiness; status reads under a held write lock without Wi-Fi probes or module writes; 26 Tailscale checks; 27 host-WebUI checks; 79 discovery checks; core/install-preset checks. No user's config, login, network, hotspot or SMS data is used.
+- Controller HTTP/WebSocket tests verify the authenticated `/clash/` proxy, injected controller secret, private-header stripping, redirects, and session logout. Already-open controller WebSockets close within the 5-second revalidation interval. Enhanced tests cover the main-password requirement, local-manager-only configuration, rejection of TCP-loopback impersonation and `/api/run` bypass, independent operation-password sessions, revocation, invalid-config fail-closed behavior, bounded concurrency, terminal timeout/output/process-group cleanup, and scrcpy socket revocation.
+- `home-performance-smoke.cjs` passes against the production bundle with 10,000 mocked connections: no full connection/proxy/provider/map requests for the overview; hidden pages stop polling; resume uses summaries; detailed eBPF is manual; 404 from old cores does not trigger a heavy fallback. The tested home text requires no Google Fonts fallback; arbitrary names outside the bundled subset may still need fallback fonts.
+- `webui-loading-smoke.cjs` passes while `tailscaleRead` and `webuiSession` remain unresolved: refresh still submits status requests, the port dialog opens, and secondary reads are not duplicated.
+- `live-smoke.cjs` passes both scenarios: 2,000 proxy nodes mount 16 initial / 30 scrolled node semantics, while 240 connection records display the latest 200 and initially mount eight rows. Refresh failures preserve snapshots but prevent writes; empty IDs cannot disconnect, duplicate IDs do not cause duplicate writes. Counts are mounted accessibility nodes, not an instrumented recomposition count.
+- `enhanced-smoke.cjs` passes at 1,440px and 393px: operation-password gate, on-demand battery/SMS reads, clear-message display, confirmed terminal payload, and lock action. Returned terminal text and cleared locked state are visually checked in screenshots. Separate proxy screenshots confirm the child strategy icon is present on both widths, using the same configured image as the parent.
+- Compose 1.12.0 can retain stale accessibility nodes after overlays close or rows detach. Synthetic `dispatchEvent('click')` on an obsolete semantics node raises a detached-Modifier exception; real pointer tests pass without those exceptions. Tests use real pointer interaction, isolate popup scenarios by reload, and use screenshots plus backend-call assertions where popup semantics remain stale. This is not a screen-reader compatibility claim. The connections sheet retains its content until its close animation completes.
+
+### Final resource audit
+
+- Magisk overview uses a visible-only 2-second summary loop and approximately 30-second metadata/maintenance refresh; connections use a visible-only 5-second loop, paused during details. Tailscale login polling cancels on close/navigation and waits while hidden. Enhanced data is loaded only on action, never on a device polling daemon.
+- `webd` streams precompressed assets produced by packaging; it no longer gzip-compresses Wasm or retains large Wasm copies per server at runtime. The package contains 14 gzip/plain pairs with identical decompressed bytes. Missing/stale compressed files safely fall back to their plain files. Icon caches are bounded, decoding concurrency is limited, and SVG temporary objects are released.
+- Shell status reads consume the policy cache rather than probing Wi-Fi or writing module metadata. The existing policy supervisor still checks service/SSID conditions every five seconds; Wi-Fi-off policy avoids `cmd wifi` and `dumpsys`, and unchanged policy snapshots are not rewritten. This remaining watchdog is intentional for recovery/SSID response, not zero overhead.
+- Device commands are temporary and bounded: two device operations, one terminal command, two password verifications and eight scrcpy requests at a time. Terminal execution is capped at 60 seconds and bounded output; ordinary child processes are cleaned up. WebSocket permission checks run only while their connections exist. Scrcpy is a proxy entry, not an installed recording service or an automatically started daemon.
+- LuCI was also found polling full connections and map diagnostics on its overview. It now uses the same summary endpoints, serializes periodic reads, stops polls/streams when hidden or detached, resumes after visibility/back-forward-cache restoration, and tears down the real-time log stream on the system-log tab. The 17 frontend suites and syntax checks pass, including new lifecycle, no-overlap, HTTP-body deadline, 404-no-heavy-fallback and live-identity tests. LuCI router deployment was not performed.
+- Existing eBPF maintenance remains necessary: interface repair is event-driven with a 10-minute drift recheck; datapath diagnostics read fixed counters every 30 seconds only when a data plane exists; bounded UDP/state cleanup follows the existing timeout design. Tailscale networking, health checks explicitly configured by the user and active traffic still consume resources. No whole-device current, temperature, throughput-under-UI-load or battery-life measurement was performed.
+
+### Local artifacts and hardware boundaries
+
+- PowerShell packaging succeeds with the production WebUI, both static webd architectures and the Android device-control DEX. The ZIP has 57 unique entries, normalized LF shell scripts, exact production assets and no tests. The Linux packaging path was not completed because the local host lacks `zip`; its shell source passes syntax checks.
+- `dist/mihomo-ebpf-magisk-v1.2.0.zip`: 19,794,027 bytes; SHA-256 `6890078d0d5344cd41d3e7a770e055c94ed74ae6d0dc6ef632361b21c834cf2a`.
+- `dist/mihomo-android-arm64-webui-perf-test.gz`: 23,477,211 bytes; SHA-256 `d56df1af0c8169a9016331d752afcd6858715a01467fbd67cc223e4edfdd6171`. It contains a 68,404,832-byte Android ARM64/API 28 executable built with NDK 27 and `with_gvisor with_ebpf`, version label `webui-perf-test`. This is a local build of the current dirty checkout, not an upstream release, an APK or a flashable module.
+- The module does not include the mihomo core. Update module and core together; installing only the module leaves old-core blocking paths unchanged. Keep the existing config and a backup of the working core. No artifact was installed on a device in this pass.
+- Not verified on hardware: real Tailnet login/ownership changes; carrier/OEM SMS permissions and hotspot/tethering callbacks; real ws-scrcpy video/input and device power use. Hotspot control requires Android 11/API 30+ and may be rejected by OEM permission policy. The user must provide a compatible loopback ws-scrcpy service with `WS_SCRCPY_PATHNAME=/enhanced/scrcpy/`. Enhanced control is root-equivalent after authorization, not a sandbox; public exposure is strongly discouraged.
+
+## Complete built-in screen control and Android integration (2026-11-06)
+
+This follow-up supersedes the preceding pass's external-service-only scrcpy
+limitation and module ZIP fingerprint. The original results remain above as a
+historical record. No user-owned phone, account, SMS database or network settings
+were used. A new disposable `MihomoEnhancedQA20261106` AVD, Android 15/API 35,
+Google APIs x86_64 with SELinux enforcing, ran the actual Go webd and Android
+helpers; Chromium connected through a temporary ADB forward. ADB was test
+transport only: the installed feature itself does not depend on ADB or Node.
+
+### Functionality completed
+
+- The module includes official scrcpy 5.0.1, JMuxer 2.1.4, the web client and
+  third-party notices. Both build scripts fetch pinned, SHA-256-checked assets
+  and reuse valid caches. The device never downloads these dependencies.
+- Built-in mode starts `app_process` only after an authorized user clicks
+  connect. Video and input use a random abstract Unix socket and the existing
+  authenticated WebUI WebSocket. Exact child PID and permitted UID checks apply;
+  scrcpy 5.0.1 intentionally drops root to shell UID 2000, which is accepted only
+  for that child. No new TCP listener, ADB server or Node daemon is introduced.
+- Browser controls include single-pointer touch/drag, home/back/recent tasks,
+  power/volume keys, rotation, explicit Unicode clipboard paste and fullscreen.
+  Resolution, frame rate and bit rate are configurable within bounds. Default
+  1280/24 fps/2 Mbps disables audio, clipboard autosync and keep-awake. Existing
+  ws-scrcpy installations remain available through explicit external mode.
+- One encoder/session is allowed, capped at 15 minutes. Page hide/close stops
+  capture; locking or logout revokes open streams within five seconds, missing
+  pongs expire in 20 seconds, and stalled writes have deadlines. Settings changes
+  cancel the old session. No automatic background reconnect or recording occurs.
+
+### Actual Android results
+
+- Battery returns actual emulator system data: 100%, powered, 25 C. SMS initially
+  returns an empty list; an emulator-injected `QA-SMS-EMULATOR-ONLY` message from a
+  test number is then returned with its text, date and address. No real SMS is read.
+- Saving a test WPA2 hotspot configuration, enabling it, reading state and
+  disabling it all return success through the real Android helper. AP state
+  changes from disabled 11 to enabled 13 and back to 11; tethering reports active
+  during use. Client association, mobile-data routing and OEM ROM support are not
+  established by this emulator test.
+- The authorized root terminal executes `printf QA_ANDROID_TERMINAL` and returns
+  the expected output; desktop regressions additionally test timeout, output caps
+  and child process-group cleanup.
+- `scrcpy-device-smoke.cjs` passes with real H.264 frames in WebCodecs at 1440px
+  and MediaSource at 393px. Both display 576 x 1280 frames, send touch gestures and
+  home keys, and verify Android actually changes from Settings to its launcher.
+  Changing max size to 960 changes the rendered longest side accordingly.
+- The same test verifies no automatic start, refusal of a simultaneous second
+  session, hidden-page stop without auto-resume, closed-page stop, settings-change
+  stop, independent operation-password lock and main logout. Android `ps` confirms
+  no scrcpy process remains after each completed stop/revocation.
+- A separate graceful-shutdown test starts a real encoder, verifies its complete
+  `app_process ... com.genymobile.scrcpy.Server` command, sends SIGTERM to the test
+  webd, and confirms both processes exit and the browser disconnects (246 ms in
+  this sample). Process checks use command arguments rather than `ps NAME`, which
+  reports `app_process` instead of the Java class on this Android image.
+- A separate non-loopback HTTP hostname test reports `isSecureContext=false`,
+  `VideoDecoder=undefined`, and working MediaSource video. Compatibility mode is
+  therefore checked on a genuinely insecure HTTP origin, not just by hiding the
+  WebCodecs API on localhost. This is not a claim of network encryption: use
+  Tailscale or HTTPS for untrusted transport.
+
+### Resource and regression checks
+
+- Static-frame repeats are reduced from scrcpy's default 100 ms to 1 second,
+  only while explicitly connected. Quiet screens do not trigger forced reconnects.
+  The server streams each bounded packet instead of queueing complete videos;
+  control rate, packet size, concurrency and output are bounded. Browser decoder
+  backlog stops the session; MSE staging over 4 MiB stops rather than growing
+  indefinitely, old buffered playback is cleaned, and stop releases all players.
+- An idle 20-second Android sample after repeated sessions shows unchanged webd
+  user/system CPU ticks (46/12), unchanged read/write syscall counters and unchanged
+  disk I/O bytes, with 11,136 KiB RSS and nine threads before/after. No recording
+  or device helper process remains. This is an emulator webd sample, not a phone
+  current measurement, a core throughput benchmark or a zero-overhead guarantee.
+- Final webd `go vet ./...` and full `go test -race -count=1 ./...` pass (29.9 s).
+  New regressions cover child credentials, missing/corrupt assets, repeated failed
+  startup cleanup, single-session reservation, bounded shutdown, control encoding,
+  settings limits and build-time asset verification.
+- All 199 JavaScript tests pass, including screen lifecycle, stale decoder
+  callbacks, authorization cancellation, packet/clipboard bounds, MSE backlog and
+  explicit-stop routing. Compose production builds, wide/narrow enhanced UI smoke,
+  indefinitely pending WebUI/TS reads and summary-only/hidden home checks pass.
+  The 17 LuCI suites and syntax checks pass. Module shell regressions also pass;
+  install preset tests pass after explicitly assigning binary/resource permissions.
+- Core code is unchanged by this follow-up; the preceding whole-core and race
+  results still apply. The overall resource review retains the intentional
+  policy watchdog, configured health checks and Tailscale/eBPF network maintenance,
+  rather than presenting necessary networking as removable WebUI overhead.
+
+### Updated delivery
+
+- `dist/mihomo-ebpf-magisk-v1.2.0.zip`: 20,790,441 bytes; SHA-256
+  `602e510864be384bd1a10954fd21bd4d4f2686f6dea4d46c1657264d5f50767a`.
+  PowerShell build succeeds. Verification checks 62 unique entries, 14 matching
+  gzip/plain pairs, both ELF architectures, the device-control DEX, exact current
+  production WebUI files, scrcpy/JMuxer hashes, all notices and LF shell scripts.
+- The matching Android ARM64 core remains
+  `dist/mihomo-android-arm64-webui-perf-test.gz`, 23,477,211 bytes; SHA-256
+  `d56df1af0c8169a9016331d752afcd6858715a01467fbd67cc223e4edfdd6171`.
+  Update both module and core to obtain the earlier blocking-path fixes.
+- Remaining hardware boundaries: real Tailnet account ownership/switching,
+  device/OEM permissions and encoders, hotspot clients and routing, DRM capture,
+  sustained device throughput, heat and battery consumption. No full Magisk flash
+  or user-device deployment is performed in this follow-up. Enhanced access is
+  root-equivalent, and public exposure remains strongly discouraged.
+- The disposable emulator, its AVD files, temporary ADB forward and preview server
+  on 8790 are removed/stopped after validation. The pre-existing service on 8793
+  is not changed.

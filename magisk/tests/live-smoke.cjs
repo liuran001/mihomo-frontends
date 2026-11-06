@@ -47,13 +47,15 @@ function previewBackend(options) {
       if (method !== 'GET') {
         mock.writes.push({ operation, payload });
         response = { ok: false, error: 'Smoke test forbids controller writes' };
-      } else if (['/proxies', '/connections', '/version'].includes(endpoint)) {
+      } else if (['/proxies', '/connections', '/version', '/connections/summary', '/overview', '/ebpf/summary', '/ebpf'].includes(endpoint)) {
         mock.reads[endpoint] = (mock.reads[endpoint] || 0) + 1;
         if (mock.hold[endpoint]) {
           delete mock.hold[endpoint];
           await new Promise(resolve => { mock.pending[endpoint] = resolve; });
         }
-        if (mock.failures[endpoint] > 0) {
+        if (options.legacy && ['/connections/summary', '/overview', '/ebpf/summary'].includes(endpoint)) {
+          response = { ok: false, error: 'HTTP 404' };
+        } else if (mock.failures[endpoint] > 0) {
           mock.failures[endpoint]--;
           response = { ok: false, error: `mock ${endpoint} refresh failed` };
         } else if (endpoint === '/proxies') {
@@ -63,6 +65,12 @@ function previewBackend(options) {
             connections: connections.map(connection => ({ ...connection, upload: connection.upload + mock.reads[endpoint] })),
             uploadTotal: 123456, downloadTotal: 789012,
           } };
+        } else if (endpoint === '/connections/summary') {
+          response = { ok: true, data: { connectionCount: options.connectionCount, uploadTotal: 123456, downloadTotal: 789012, memory: 12345678 } };
+        } else if (endpoint === '/overview') {
+          response = { ok: true, data: { exit: { chain: ['QA-SELECTOR', nodes[0]], smart: false }, providers: {} } };
+        } else if (endpoint.startsWith('/ebpf')) {
+          response = { ok: true, data: { inbounds: [{ id: 1, mode: 'local', local_data_plane: 'cgroup', self_bypass: 'mark', maintenance: [] }] } };
         } else response = { ok: true, data: { version: 'live-smoke' } };
       } else {
         mock.unexpected.push({ operation, payload });
@@ -71,7 +79,7 @@ function previewBackend(options) {
     } else if (operation === 'onboardingState') {
       response = { ok: true, has_config: true, completed: true };
     } else if (operation === 'status') {
-      response = { ok: true, running: false, desired: 'stopped', allowed: true, current_ssid: '' };
+      response = { ok: true, running: !!options.running, desired: options.running ? 'running' : 'stopped', allowed: true, current_ssid: '' };
     } else if (operation === 'coreInfo') {
       response = { ok: true, installed: true, version: 'live-smoke', can_rollback: false };
     } else if (operation === 'policyGet') {
@@ -89,7 +97,7 @@ function previewBackend(options) {
   } });
 }
 
-async function installRoutes(context, external, missing) {
+async function installRoutes(context, external, missing, backendOptions = {}) {
   const mime = {
     '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.mjs': 'application/javascript',
     '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json', '.yaml': 'text/plain',
@@ -104,7 +112,7 @@ async function installRoutes(context, external, missing) {
       return route.abort();
     }
     if (url.pathname === '/backend.js') {
-      return route.fulfill({ contentType: mime['.js'], body: `(${previewBackend.toString()})(${JSON.stringify({ nodeCount, connectionCount })});` });
+      return route.fulfill({ contentType: mime['.js'], body: `(${previewBackend.toString()})(${JSON.stringify({ nodeCount, connectionCount, ...backendOptions })});` });
     }
     const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
     const filename = path.resolve(artifactRoot, relative);
@@ -127,7 +135,7 @@ async function installRoutes(context, external, missing) {
 }
 
 const button = (page, name) => page.getByRole('button', { name, exact: true });
-const node = (page, name) => button(page, name);
+const node = (page, name) => page.getByRole('button', { name: new RegExp(`^Q ${name}(?: |$)`) });
 
 async function until(check, description, timeout = 12000) {
   const deadline = Date.now() + timeout;
@@ -157,7 +165,7 @@ async function seek(page, target, amount, attempts = 12) {
       const bounds = await target.boundingBox();
       if (bounds) {
         const midY = bounds.y + bounds.height / 2;
-        if (bounds.y >= 80 && midY < 770) return;
+        if (bounds.y >= 80 && midY < page.viewportSize().height - 8) return;
       }
     }
     await wheel(page, amount);
@@ -174,13 +182,12 @@ async function tryDisabled(page, target) {
   const bounds = await target.boundingBox();
   assert.ok(bounds && bounds.width > 0 && bounds.height > 0, 'disabled control must remain rendered');
   await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  await target.dispatchEvent('click');
   await page.waitForTimeout(150);
   await assertNoWrites(page);
 }
 
 async function mountedNodes(page) {
-  return page.getByRole('button', { name: /^QA-NODE-\d{4}$/, includeHidden: true }).evaluateAll(elements => elements.map(element =>
+  return page.getByRole('button', { name: /^Q QA-NODE-\d{4}(?: |$)/, includeHidden: true }).evaluateAll(elements => elements.map(element =>
     `${element.getAttribute('aria-label') || ''} ${element.textContent || ''}`,
   ).filter(label => /QA-NODE-\d{4}/.test(label)));
 }
@@ -204,12 +211,14 @@ async function awaitPending(page, endpoint) {
 
 async function releaseFailure(page, endpoint) {
   await page.evaluate(endpoint => window.__liveMock.release(endpoint), endpoint);
-  await page.getByText('快照已过期 · 请刷新后操作', { exact: true }).waitFor({ state: 'visible' });
+  await wheel(page, -1000000);
+  await page.getByText('快照已过期 · 请刷新后操作').waitFor({ state: 'visible' });
 }
 
 async function proxyScenario(page) {
   const started = Date.now();
-  await click(page, button(page, '网络'));
+  await click(page, button(page, '代理'));
+  await click(page, node(page, 'QA-SELECTOR'));
   await node(page, 'QA-NODE-0001').waitFor({ state: 'visible' });
   await until(() => node(page, 'QA-NODE-0001').isEnabled(), 'fresh proxy snapshot writable');
   const initial = await boundedNodes(page);
@@ -223,17 +232,21 @@ async function proxyScenario(page) {
   assert.ok(initial.some(name => !scrolled.includes(name)), 'offscreen node semantics must leave the mounted set');
   const scrollMax = Math.max(...scrolled.map(name => Number(name.match(/QA-NODE-(\d{4})/)[1])));
   assert.ok(scrollMax > 10, 'scroll must reveal nodes beyond the initial rows');
-  await seek(page, button(page, '刷新代理组'), -1000000);
+  await seek(page, node(page, 'QA-SELECTOR'), -1000000);
   await holdFailure(page, '/proxies');
-  await click(page, button(page, '刷新代理组'));
+  await click(page, button(page, '刷新'));
   await awaitPending(page, '/proxies');
-  await page.getByText('刷新中 · 显示上次快照', { exact: true }).waitFor({ state: 'visible' });
+  await wheel(page, -1000000);
+  await page.getByText('刷新中 · 显示上次快照').waitFor({ state: 'visible' });
   await tryDisabled(page, node(page, 'QA-NODE-0001'));
   await releaseFailure(page, '/proxies');
   await tryDisabled(page, node(page, 'QA-NODE-0001'));
   await boundedNodes(page);
-  await click(page, button(page, '刷新代理组'));
+  await click(page, button(page, '刷新'));
   await until(() => node(page, 'QA-NODE-0001').isEnabled(), 'successful retry restores proxy writes');
+  await click(page, node(page, 'QA-SELECTOR'));
+  await seek(page, node(page, 'QA-BALANCE-2'), 450);
+  await click(page, node(page, 'QA-BALANCE-2'));
   await seek(page, node(page, 'QA-LB-2-3'), 1000000);
   await tryDisabled(page, node(page, 'QA-LB-2-3'));
   await assertNoWrites(page);
@@ -241,43 +254,47 @@ async function proxyScenario(page) {
 }
 
 async function connectionScenario(page) {
-  await click(page, button(page, '网络'));
-  await node(page, 'QA-NODE-0001').waitFor({ state: 'visible' });
-  await click(page, button(page, '连接'));
-  const newest = page.getByText('qa-conn-0239.invalid:443', { exact: true });
+  const shortcut = button(page, '连接');
+  await seek(page, shortcut, 700);
+  await click(page, shortcut);
+  const connection = index => page.getByRole('button', { name: new RegExp(`^qa-conn-${String(index).padStart(4, '0')}\\.invalid:443(?: |$)`) });
+  const newest = connection(239);
   await newest.waitFor({ state: 'visible' });
-  await until(() => button(page, '全部断开').isEnabled(), 'fresh connections snapshot writable');
-  const closeButtons = button(page, '断开连接');
-  await seek(page, page.getByText('qa-conn-0234.invalid:443', { exact: true }), 260);
-  assert.ok(await closeButtons.count() > 1, 'multiple duplicate/empty-ID rows must coexist');
-  // Verify empty-ID row (qa-conn-0234) does not trigger disconnect writes
-  const emptyIdCloseBtn = closeButtons.nth(2);
-  await tryDisabled(page, emptyIdCloseBtn);
-  // Verify usable duplicate-ID row (qa-conn-0235) attempts close write
-  const duplicateIdCloseBtn = closeButtons.nth(1);
-  await click(page, duplicateIdCloseBtn);
-  const writes = await page.evaluate(() => window.__liveMock.writes);
-  assert.ok(writes.length > 0 && writes[0].payload.path.includes('duplicate'), 'duplicate-ID row must trigger disconnect write');
-  // Reset writes so later assertNoWrites passes
-  await page.evaluate(() => { window.__liveMock.writes.length = 0; });
-  await seek(page, page.getByText('qa-conn-0040.invalid:443', { exact: true }), 1000000);
-  assert.equal(await page.getByText('qa-conn-0039.invalid:443', { exact: true }).count(), 0, 'only latest 200 of 240 records are rendered');
-  await seek(page, button(page, '刷新连接'), -1000000);
+  await until(() => button(page, '断开全部').isEnabled(), 'fresh connections snapshot writable');
+  const mounted = await page.getByRole('button', { name: /^qa-conn-\d+\.invalid:443/, includeHidden: true }).count();
+  assert.ok(mounted > 0 && mounted < 40, `connection list must virtualize rows; mounted ${mounted}`);
+  await seek(page, connection(40), 1000000);
+  assert.equal(await connection(39).count(), 0, 'only latest 200 of 240 records are rendered');
+  await seek(page, newest, -1000000);
   await holdFailure(page, '/connections');
   await click(page, button(page, '刷新连接'));
   await awaitPending(page, '/connections');
   await newest.waitFor({ state: 'visible' });
-  await tryDisabled(page, button(page, '全部断开'));
-  await tryDisabled(page, closeButtons.first());
+  await tryDisabled(page, button(page, '断开全部'));
   await releaseFailure(page, '/connections');
   await newest.waitFor({ state: 'visible' });
-  await tryDisabled(page, button(page, '全部断开'));
-  await tryDisabled(page, closeButtons.first());
+  await tryDisabled(page, button(page, '断开全部'));
   await click(page, button(page, '刷新连接'));
-  await until(() => button(page, '全部断开').isEnabled(), 'successful retry restores connection writes');
+  await until(() => button(page, '断开全部').isEnabled(), 'successful retry restores connection writes');
   await newest.waitFor({ state: 'visible' });
   await assertNoWrites(page);
-  return { connectionCount, displayedLimit: 200, duplicateAndEmptyIds: true, retainedOnFailure: true };
+  await page.reload();
+  await page.locator('#loading').waitFor({ state: 'detached', timeout: 60000 });
+  await seek(page, shortcut, 700);
+  await click(page, shortcut);
+  await click(page, connection(237));
+  await tryDisabled(page, button(page, '断开此连接'));
+  await page.reload();
+  await page.locator('#loading').waitFor({ state: 'detached', timeout: 60000 });
+  await seek(page, shortcut, 700);
+  await click(page, shortcut);
+  await click(page, connection(238));
+  await click(page, button(page, '断开此连接'));
+  const writes = await page.evaluate(() => window.__liveMock.writes);
+  assert.equal(writes.length, 1);
+  assert.ok(writes[0].payload.path.includes('duplicate'), 'duplicate-ID row must trigger disconnect write');
+  await page.evaluate(() => { window.__liveMock.writes.length = 0; });
+  return { connectionCount, displayedLimit: 200, mounted, duplicateAndEmptyIds: true, retainedOnFailure: true };
 }
 
 const scenarios = [
@@ -314,7 +331,7 @@ async function main() {
         });
         await page.goto(previewURL.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.locator('#loading').waitFor({ state: 'detached', timeout: 60000 });
-        await button(page, '网络').waitFor({ state: 'visible' });
+        await button(page, '代理').waitFor({ state: 'visible' });
         const metrics = await scenario.run(page);
         await assertNoWrites(page);
         assert.deepEqual(await page.evaluate(() => window.__liveMock.unexpected), []);
@@ -351,4 +368,4 @@ async function main() {
 
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
 
-module.exports = { previewBackend, scenarios };
+module.exports = { previewBackend, scenarios, installRoutes };

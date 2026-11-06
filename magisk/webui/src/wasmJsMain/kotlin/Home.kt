@@ -167,7 +167,7 @@ private fun formatAgo(ms: Double): String {
 // ---------------- 数据 ----------------
 
 internal data class SubInfo(
-    val name: String, val alive: Int, val total: Int, val used: Double, val quota: Double,
+    val name: String, val total: Int, val used: Double, val quota: Double,
     val expire: Double, val updatedAt: Double,
 ) {
     val ratio: Double? get() = if (quota > 0) (used / quota).coerceIn(0.0, 1.0) else null
@@ -193,14 +193,20 @@ internal object LiveHome {
     var downTotal by mutableStateOf<Double?>(null)
     var upTotal by mutableStateOf<Double?>(null)
     var conns by mutableStateOf<Int?>(null)
+    var trafficError by mutableStateOf("")
+    private var summaryUnsupported = false
     private var last: Triple<Double, Double, Double>? = null
 
     var exitNode by mutableStateOf("")
     var exitChain by mutableStateOf("")
-    private var matchTarget: String? = null
+    private var overviewUnsupported = false
+    private var ebpfSummaryUnsupported = false
 
     var ebpf by mutableStateOf<JsonObject?>(null)
     var ebpfError by mutableStateOf("")
+    var ebpfDetails by mutableStateOf<JsonObject?>(null)
+    var ebpfInspecting by mutableStateOf(false)
+    var ebpfDetailsError by mutableStateOf("")
     var subs by mutableStateOf<List<SubInfo>?>(null)
     var subsError by mutableStateOf("")
     var updating by mutableStateOf(false)
@@ -216,15 +222,31 @@ internal object LiveHome {
         last = null
         down = null; up = null
         downHist = emptyList(); upHist = emptyList(); connHist = emptyList()
+        summaryUnsupported = false
+        overviewUnsupported = false
+        ebpfSummaryUnsupported = false
+        trafficError = ""
+        ebpfDetails = null
+        ebpfDetailsError = ""
     }
 
     /** 每 2 秒：由累计流量差值算出实时网速。 */
     suspend fun pollFast() {
-        val data = runCatching { ctl("/connections") }.getOrNull() ?: return
+        if (summaryUnsupported) return
+        val data = try {
+            ctl("/connections/summary")?.also { trafficError = "" } ?: return
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            summaryUnsupported = failure.message.orEmpty().contains("404")
+            trafficError = if (summaryUnsupported) "请更新内核以启用低开销流量概览" else "无法读取流量概览"
+            return
+        }
         val dl = data.num("downloadTotal") ?: return
         val ul = data.num("uploadTotal") ?: return
         val now = nowMs()
-        val n = (data["connections"] as? JsonArray)?.size ?: 0
+        val n = data.num("connectionCount")?.toInt() ?: return
+        LiveOverview.memoryInUse = data.num("memory")
         downTotal = dl; upTotal = ul; conns = n
         connHist = (connHist + n.toDouble()).takeLast(SPARK)
         val prev = last
@@ -241,51 +263,21 @@ internal object LiveHome {
 
     /** 每 15 秒：出口、eBPF、订阅。 */
     suspend fun pollSlow() {
-        try {
-            val proxies = ctl("/proxies")?.obj("proxies")
-            val target = matchTarget ?: run {
-                val rules = ctl("/rules")?.arr("rules").orEmpty()
-                (rules.lastOrNull { it.string("type") == "Match" }?.string("proxy") ?: "GLOBAL").also { matchTarget = it }
-            }
-            if (proxies != null) {
-                val chain = mutableListOf<String>()
-                var name: String? = target
-                var smart = false
-                while (name != null && proxies[name] is JsonObject && name !in chain) {
-                    chain += name
-                    val p = proxies.obj(name)!!
-                    if (p["all"] !is JsonArray) break
-                    val type = p.string("type")
-                    if (type == "Smart") { smart = true; break }
-                    if (type == "LoadBalance") break
-                    name = p.string("now").ifEmpty { null }
-                }
-                exitNode = chain.lastOrNull()?.let { if (smart) "$it（智能）" else it } ?: ""
-                exitChain = chain.joinToString(" → ")
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-        }
-        try {
-            ebpf = ctl("/ebpf"); ebpfError = ""
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            ebpf = null
-            ebpfError = if (failure.message.orEmpty().contains("404")) "当前内核不含 eBPF 状态接口" else "无法读取 eBPF 状态"
-        }
-        try {
-            val providers = ctl("/providers/proxies")?.obj("providers")
+        if (!overviewUnsupported) try {
+            val overview = ctl("/overview")
+            val exit = overview?.obj("exit")
+            val chain = (exit?.get("chain") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+            val smart = (exit?.get("smart") as? JsonPrimitive)?.booleanOrNull == true
+            exitNode = chain.lastOrNull()?.let { if (smart) "$it（智能）" else it }.orEmpty()
+            exitChain = chain.joinToString(" → ")
+            val providers = overview?.obj("providers")
             subs = providers?.entries?.mapNotNull { (key, value) ->
                 val p = value as? JsonObject ?: return@mapNotNull null
                 if (p.string("vehicleType") != "HTTP") return@mapNotNull null
-                val list = p.arr("proxies")
                 val info = p.obj("subscriptionInfo")
                 SubInfo(
                     name = p.string("name").ifEmpty { key },
-                    alive = list.count { (it["alive"] as? JsonPrimitive)?.booleanOrNull == true },
-                    total = list.size,
+                    total = p.num("count")?.toInt() ?: 0,
                     used = (info?.num("Upload") ?: 0.0) + (info?.num("Download") ?: 0.0),
                     quota = info?.num("Total") ?: 0.0,
                     expire = info?.num("Expire") ?: 0.0,
@@ -296,7 +288,35 @@ internal object LiveHome {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            subsError = failure.message ?: "无法读取订阅"
+            overviewUnsupported = failure.message.orEmpty().contains("404")
+            subsError = if (overviewUnsupported) "请更新内核以启用低开销概览" else failure.message ?: "无法读取概览"
+        }
+        if (!webuiVisible() || ebpfSummaryUnsupported) return
+        try {
+            ebpf = ctl("/ebpf/summary"); ebpfError = ""
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            ebpf = null
+            ebpfSummaryUnsupported = failure.message.orEmpty().contains("404")
+            ebpfError = if (ebpfSummaryUnsupported) "请更新内核以读取轻量 eBPF 状态" else "无法读取 eBPF 状态"
+        }
+    }
+
+    fun inspectEbpf() {
+        if (ebpfInspecting) return
+        ebpfInspecting = true
+        liveScope.launch {
+            try {
+                ebpfDetails = ctl("/ebpf")
+                ebpfDetailsError = ""
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                ebpfDetailsError = failure.message ?: "诊断失败"
+            } finally {
+                ebpfInspecting = false
+            }
         }
     }
 
@@ -363,9 +383,10 @@ fun HomePage(onNavigate: (String) -> Unit) {
         if (!home.checkedOnce) { home.checkedOnce = true; home.checkSites(); home.checkIp() }
         var tick = 0
         while (true) {
+            awaitWebuiVisible()
             if (liveIdle) {
                 home.pollFast()
-                if (tick % 8 == 0) home.pollSlow()
+                if (tick % 15 == 0 && webuiVisible()) home.pollSlow()
             }
             tick++
             delay(2000)
@@ -383,6 +404,7 @@ fun HomePage(onNavigate: (String) -> Unit) {
         val issues = listOf("服务状态" to state.statusError, "内核" to state.coreError, "控制器" to state.controllerError)
             .filter { it.second.isNotEmpty() }.joinToString("\n") { "${it.first}：${it.second}" }
         banner(issues, BannerKind.Error, "issues")
+        banner(home.trafficError, BannerKind.Error, "traffic-error")
         if (state.running == true) {
             item(key = "speed") { SpeedCard() }
             item(key = "kpis") { KpiGrid(onNavigate) }
@@ -696,13 +718,16 @@ private fun KeyValue(label: String, value: String, color: Color = MiuixTheme.col
 private fun EbpfCard() {
     val home = LiveHome
     val data = home.ebpf
-    HomeCard("eBPF 透明代理") {
+    HomeCard("eBPF 透明代理", tools = {
+        SmallAction(if (home.ebpfInspecting) "诊断中…" else "详细诊断", enabled = !home.ebpfInspecting) { home.inspectEbpf() }
+    }) {
         val inbound = data?.arr("inbounds")?.firstOrNull()
         when {
             data == null -> Text(home.ebpfError.ifEmpty { "读取中…" }, fontSize = 13.sp, color = Tone.muted)
             inbound == null -> Text("没有启用 eBPF 入站", fontSize = 13.sp, color = Tone.muted)
             else -> {
-                val res = inbound.obj("resources")
+                val detail = home.ebpfDetails?.arr("inbounds")?.firstOrNull { it.num("id") == inbound.num("id") }
+                val res = detail?.obj("resources")
                 val report = res?.obj("maps")
                 val maps = report?.arr("maps").orEmpty()
                 val pressured = maps.count { it.string("pressure") in setOf("warning", "degraded") }
@@ -718,10 +743,14 @@ private fun EbpfCard() {
                 })
                 KeyValue("本机数据面", inbound.string("local_data_plane").ifEmpty { "-" })
                 if (inbound.string("shared_data_plane").isNotEmpty()) KeyValue("共享数据面", inbound.string("shared_data_plane"))
-                KeyValue("已加载程序", "${(res?.get("programs") as? JsonArray)?.size ?: 0} 个")
-                KeyValue("Map 占用", "$mapText · ${maps.size} 个" + if (pressured > 0) " · $pressured 个接近上限" else "", mapColor)
+                if (res != null) {
+                    KeyValue("已加载程序", "${(res["programs"] as? JsonArray)?.size ?: 0} 个")
+                    KeyValue("Map 占用（上次诊断）", "$mapText · ${maps.size} 个" + if (pressured > 0) " · $pressured 个接近上限" else "", mapColor)
+                    val inspectionError = report?.string("error").orEmpty()
+                    if (inspectionError.isNotEmpty()) Text("诊断未完成：$inspectionError", fontSize = 12.sp, color = Tone.warning)
+                } else Text("日常概览不扫描流量表；详细占用请手动诊断。", fontSize = 12.sp, color = Tone.muted)
                 KeyValue("后台清理", if (failures > 0) "$failures 次失败" else "正常", if (failures > 0) Tone.danger else Tone.success)
-                val error = inbound.string("resource_error")
+                val error = home.ebpfDetailsError.ifEmpty { detail?.string("resource_error").orEmpty() }
                 if (error.isNotEmpty()) Text(error, fontSize = 13.sp, color = Tone.danger, modifier = Modifier.padding(top = 4.dp))
             }
         }
@@ -752,7 +781,7 @@ private fun SubItem(sub: SubInfo) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(sub.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.onSurface,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text("${sub.alive} / ${sub.total} 可用", fontSize = 12.sp, color = if (sub.alive > 0) Tone.muted else Tone.danger)
+            Text("${sub.total} 个节点", fontSize = 12.sp, color = Tone.muted)
         }
         sub.ratio?.let { ratio ->
             val color = when {
