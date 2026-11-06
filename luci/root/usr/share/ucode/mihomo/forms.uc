@@ -334,11 +334,72 @@ function sec_providers(ctx) {
 		migratable: migratable(ctx) };
 }
 
+function rule_target(rule) {
+	let parts = map(split(rule, ','), (s) => trim(s));
+	while (length(parts) > 2 && match(lc(parts[length(parts) - 1]), /^(no-resolve|src)$/))
+		pop(parts);
+	return parts[length(parts) - 1];
+}
+
+// DNS 服务器以 地址#出站名 指定经哪个出站查询
+function dns_hit(v, name) {
+	if (type(v) == 'string')
+		return substr(v, -length(name) - 1) == '#' + name;
+	if (type(v) == 'array')
+		return length(filter(v, (e) => dns_hit(e, name))) > 0;
+	if (type(v) == 'object')
+		return length(filter(values(v), (e) => dns_hit(e, name))) > 0;
+	return false;
+}
+
+// 指向 name 的引用（中文说明）：规则出站、前置代理、规则集/订阅的 proxy、DNS 服务器的 #name
+function policy_refs(x, name) {
+	let refs = [];
+	for (let i, r in arr(x.rules))
+		if (type(r) == 'string' && rule_target(r) == name)
+			push(refs, '规则第 ' + (i + 1) + ' 条');
+	for (let p in arr(x.proxies))
+		if (obj(p)['dialer-proxy'] == name)
+			push(refs, '节点 ' + p.name + ' 的前置代理');
+	for (let g in arr(x['proxy-groups']))
+		if (obj(g)['dialer-proxy'] == name)
+			push(refs, '策略组 ' + g.name + ' 的前置代理');
+	for (let n, e in obj(x['rule-providers']))
+		if (obj(e).proxy == name)
+			push(refs, '规则集 ' + n + ' 的下载方式');
+	for (let n, e in obj(x['proxy-providers']))
+		if (obj(e).proxy == name || obj(obj(e).override)['dialer-proxy'] == name)
+			push(refs, '订阅 ' + n);
+	if (dns_hit(x.dns, name))
+		push(refs, 'DNS 服务器');
+	return refs;
+}
+
+// 其他策略组通过锚点继承它时不能删除
+function group_anchor_users(ctx, i) {
+	let raws = arr(ctx.raw.groups), anchor = obj(raws[i]).anchor, out = [];
+	if (type(anchor) != 'string' || anchor == '')
+		return out;
+	for (let j, r in raws)
+		if (j != i && obj(r).merge == anchor)
+			push(out, obj(arr(ctx.x['proxy-groups'])[j]).name);
+	return out;
+}
+
+// data 为合并锚点后的完整策略组（编辑表单用）；inherited 为继承自锚点的字段；
+// anchored 为通过锚点继承它的其他组（不能删除）；refs 为指向它的规则等（删除前需先改掉）
 function sec_groups(ctx) {
-	return map(group_info(ctx), (g) => ({
-		name: g.name, type: g.type, use: g.use, include_all_providers: g.include_all_providers,
-		include_all: g.include_all, use_from: g.use_from
-	}));
+	let raws = arr(ctx.raw.groups);
+	return map(group_info(ctx), (g) => {
+		let own = obj(raws[g.index]).keys ?? [];
+		let data = obj(arr(ctx.x['proxy-groups'])[g.index]);
+		return {
+			name: g.name, type: g.type, use: g.use, include_all_providers: g.include_all_providers,
+			include_all: g.include_all, use_from: g.use_from, data: data,
+			inherited: has(own, '<<') ? filter(keys(data), (k) => !has(own, k)) : [],
+			anchored: group_anchor_users(ctx, g.index), refs: policy_refs(ctx.x, g.name)
+		};
+	});
 }
 
 /* ---------- 区段：ebpf ---------- */
@@ -1307,13 +1368,6 @@ function op_tailscale_set(op, ctx) {
 const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'];
 const TS_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 
-function rule_target(rule) {
-	let parts = map(split(rule, ','), (s) => trim(s));
-	while (length(parts) > 2 && match(lc(parts[length(parts) - 1]), /^(no-resolve|src)$/))
-		pop(parts);
-	return parts[length(parts) - 1];
-}
-
 // 每个策略组的 proxies 列表（显式或经合并键继承自锚点），按路径去重
 function proxies_lists(ctx) {
 	let groups = arr(ctx.x['proxy-groups']), raws = arr(ctx.raw.groups), anchors = anchor_index(ctx), out = [], seen = {};
@@ -1519,40 +1573,6 @@ function taken_names(x) {
 	return [...policies(x), ...keys(obj(x['proxy-providers']))];
 }
 
-// DNS 服务器以 地址#出站名 指定经哪个出站查询
-function dns_hit(v, name) {
-	if (type(v) == 'string')
-		return substr(v, -length(name) - 1) == '#' + name;
-	if (type(v) == 'array')
-		return length(filter(v, (e) => dns_hit(e, name))) > 0;
-	if (type(v) == 'object')
-		return length(filter(values(v), (e) => dns_hit(e, name))) > 0;
-	return false;
-}
-
-// 指向 name 的引用（中文说明）：规则出站、前置代理、规则集/订阅的 proxy、DNS 服务器的 #name
-function policy_refs(x, name) {
-	let refs = [];
-	for (let i, r in arr(x.rules))
-		if (type(r) == 'string' && rule_target(r) == name)
-			push(refs, '规则第 ' + (i + 1) + ' 条');
-	for (let p in arr(x.proxies))
-		if (obj(p)['dialer-proxy'] == name)
-			push(refs, '节点 ' + p.name + ' 的前置代理');
-	for (let g in arr(x['proxy-groups']))
-		if (obj(g)['dialer-proxy'] == name)
-			push(refs, '策略组 ' + g.name + ' 的前置代理');
-	for (let n, e in obj(x['rule-providers']))
-		if (obj(e).proxy == name)
-			push(refs, '规则集 ' + n + ' 的下载方式');
-	for (let n, e in obj(x['proxy-providers']))
-		if (obj(e).proxy == name || obj(obj(e).override)['dialer-proxy'] == name)
-			push(refs, '订阅 ' + n);
-	if (dns_hit(x.dns, name))
-		push(refs, 'DNS 服务器');
-	return refs;
-}
-
 // 规则字符串的出站改名（AND/OR 等逻辑规则的出站同样是最后一段）
 function rule_retarget(rule, nw) {
 	let parts = map(split(rule, ','), (s) => trim(s)), i = length(parts) - 1;
@@ -1713,6 +1733,29 @@ function op_proxy_set(op, ctx) {
 	return { edits: edits };
 }
 
+// 从所有策略组的成员列表里去掉 name；某个列表只剩它时，组里还有订阅等其他来源才能删掉整个列表
+function drop_member_edits(ctx, name) {
+	let edits = [], groups = node_groups(ctx);
+	for (let l in proxies_lists(ctx)) {
+		let hits = [];
+		for (let j = length(l.names) - 1; j >= 0; j--)
+			if (l.names[j] == name)
+				push(hits, j);
+		if (!length(hits))
+			continue;
+		if (length(hits) == length(l.names)) {
+			let g = filter(groups, (e) => same(['proxy-groups', e.index, 'proxies'], l.path) && e.others);
+			if (!length(g))
+				return fail('有策略组只包含「' + name + '」，请先给它换一个出站');
+			push(edits, { t: 'del', p: l.path });
+			continue;
+		}
+		for (let j in hits)
+			push(edits, { t: 'del', p: [...l.path, j] });
+	}
+	return { edits: edits };
+}
+
 function op_proxy_delete(op, ctx) {
 	let x = ctx.x, i = node_index(x, op.name);
 	if (type(op.name) != 'string' || i < 0)
@@ -1723,26 +1766,144 @@ function op_proxy_delete(op, ctx) {
 	let refs = policy_refs(x, op.name);
 	if (length(refs))
 		return fail('节点「' + op.name + '」正在被使用：' + join('、', refs) + '。请先改成别的出站');
-	let edits = [{ t: 'del', p: ['proxies', i] }];
-	let groups = node_groups(ctx);
-	for (let l in proxies_lists(ctx)) {
-		let hits = [];
-		for (let j = length(l.names) - 1; j >= 0; j--)
-			if (l.names[j] == op.name)
-				push(hits, j);
-		if (!length(hits))
-			continue;
-		if (length(hits) == length(l.names)) {
-			let g = filter(groups, (e) => same(['proxy-groups', e.index, 'proxies'], l.path) && e.others);
-			if (!length(g))
-				return fail('有策略组只包含「' + op.name + '」，请先给它换一个出站');
-			push(edits, { t: 'del', p: l.path });
-			continue;
+	let r = drop_member_edits(ctx, op.name);
+	if (r.error)
+		return r;
+	return { edits: [{ t: 'del', p: ['proxies', i] }, ...r.edits] };
+}
+
+/* 策略组 */
+
+// 与 shared/proxylink.js 的 GROUP_TYPES 一致；relay 已被内核移除
+const GROUP_TYPES = ['select', 'smart', 'url-test', 'fallback', 'load-balance'];
+const MAX_GROUPS = 512;
+
+function group_index(x, name) {
+	for (let i, g in arr(x['proxy-groups']))
+		if (obj(g).name == name)
+			return i;
+	return -1;
+}
+
+// 校验策略组：通用字段限制 + 名称、类型；成员必须是已有的出站，订阅必须存在。
+// self 为编辑前的策略组（新增时为 null）：保留原有的非常见类型（如 relay），成员里也不能出现它的旧名字
+function check_group(g, x, self) {
+	if (type(g) != 'object')
+		return fail('策略组无效');
+	let name = node_name(g.name);
+	if (name == null)
+		return fail('策略组名称无效：不能为空、首尾不能有空格、不能包含英文逗号，最长 128 个字符');
+	if (!has(GROUP_TYPES, g.type) && !(self && g.type == self.type))
+		return fail('策略组「' + name + '」的类型不支持：' + (g.type ?? ''));
+	let v = node_value(g, 0);
+	if (v == null)
+		return fail('策略组「' + name + '」包含无效的字段');
+	let pol = policies(x);
+	if (g.proxies != null) {
+		if (type(g.proxies) != 'array' || length(g.proxies) > 1024)
+			return fail('成员列表无效');
+		for (let m in g.proxies) {
+			if (type(m) != 'string' || m == name || (self && m == self.name))
+				return fail('策略组「' + name + '」的成员不能包含自己');
+			if (!has(pol, m))
+				return fail('成员不存在：' + m);
 		}
-		for (let j in hits)
-			push(edits, { t: 'del', p: [...l.path, j] });
+	}
+	if (g.use != null) {
+		if (type(g.use) != 'array')
+			return fail('订阅列表无效');
+		let all = keys(obj(x['proxy-providers']));
+		for (let u in g.use)
+			if (type(u) != 'string' || !has(all, u))
+				return fail('订阅不存在：' + u);
+	}
+	if (!length(arr(g.proxies)) && !length(arr(g.use)) && g['include-all'] !== true &&
+	    g['include-all-proxies'] !== true && g['include-all-providers'] !== true)
+		return fail('策略组「' + name + '」至少要有一个成员、订阅，或包含全部节点');
+	let out = { name: name, type: g.type };
+	for (let k, e in v)
+		if (k != 'name' && k != 'type')
+			out[k] = e;
+	return { group: out };
+}
+
+function op_group_add(op, ctx) {
+	let x = ctx.x;
+	if (x['proxy-groups'] != null && type(x['proxy-groups']) != 'array')
+		return fail('proxy-groups 不是列表，请在配置文件页编辑');
+	if (length(arr(x['proxy-groups'])) >= MAX_GROUPS)
+		return fail('策略组过多');
+	let r = check_group(op.data, x, null);
+	if (r.error)
+		return r;
+	if (has(taken_names(x), r.group.name))
+		return fail('名称已被占用：' + r.group.name);
+	return { edits: [(type(x['proxy-groups']) == 'array') ? { t: 'append', p: ['proxy-groups'], v: r.group }
+		: { t: 'set', p: ['proxy-groups'], v: [r.group] }] };
+}
+
+function op_group_set(op, ctx) {
+	let x = ctx.x, i = group_index(x, op.name);
+	if (type(op.name) != 'string' || i < 0)
+		return fail('策略组不存在：' + (op.name ?? ''));
+	let cur = obj(x['proxy-groups'][i]);
+	let r = check_group(op.data, x, cur);
+	if (r.error)
+		return r;
+	let g = r.group, edits = [];
+	// 表单没有的字段视为删除；继承自锚点的字段只能改不能删（map_edits 会提示）
+	let vals = {};
+	for (let k in keys(cur))
+		vals[k] = null;
+	for (let k, v in g)
+		vals[k] = v;
+	let m = map_edits(['proxy-groups', i], cur, obj(arr(ctx.raw.groups)[i]).keys ?? [], vals);
+	if (m.error)
+		return m;
+	push(edits, ...m.edits);
+	if (g.name != op.name) {
+		if (has(taken_names(x), g.name))
+			return fail('名称已被占用：' + g.name);
+		let rn = rename_edits(ctx, op.name, g.name);
+		if (rn.error)
+			return rn;
+		push(edits, ...rn.edits);
 	}
 	return { edits: edits };
+}
+
+function op_group_delete(op, ctx) {
+	let x = ctx.x, i = group_index(x, op.name);
+	if (type(op.name) != 'string' || i < 0)
+		return fail('策略组不存在：' + (op.name ?? ''));
+	let users = group_anchor_users(ctx, i);
+	if (length(users))
+		return fail('策略组 ' + join('、', users) + ' 通过锚点继承「' + op.name + '」，请在配置文件页编辑');
+	let refs = policy_refs(x, op.name);
+	if (length(refs))
+		return fail('策略组「' + op.name + '」正在被使用：' + join('、', refs) + '。请先改成别的出站');
+	let r = drop_member_edits(ctx, op.name);
+	if (r.error)
+		return r;
+	// 其他组的成员按下标删除，所以最后再删掉策略组本身
+	return { edits: [...r.edits, { t: 'del', p: ['proxy-groups', i] }] };
+}
+
+// 调整顺序：to 为新的位置（从 0 开始）
+function op_group_move(op, ctx) {
+	let list = arr(ctx.x['proxy-groups']), i = group_index(ctx.x, op.name);
+	if (type(op.name) != 'string' || i < 0)
+		return fail('策略组不存在：' + (op.name ?? ''));
+	if (type(op.to) != 'int' || op.to < 0 || op.to >= length(list))
+		return fail('位置无效');
+	if (op.to == i)
+		return { edits: [] };
+	let order = [];
+	for (let j = 0; j < length(list); j++)
+		if (j != i)
+			push(order, j);
+	splice(order, op.to, 0, i);
+	return { edits: [{ t: 'list', p: ['proxy-groups'], v: map(order, (k) => ({ k: k })) }] };
 }
 
 const OPS = {
@@ -1765,7 +1926,11 @@ const OPS = {
 	'tailscale.delete': op_tailscale_delete,
 	'proxy.add': op_proxy_add,
 	'proxy.set': op_proxy_set,
-	'proxy.delete': op_proxy_delete
+	'proxy.delete': op_proxy_delete,
+	'group.add': op_group_add,
+	'group.set': op_group_set,
+	'group.delete': op_group_delete,
+	'group.move': op_group_move
 };
 
 function run_pre(list) {

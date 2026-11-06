@@ -1,4 +1,4 @@
-// 单个节点：分享链接解析与各协议的表单字段。LuCI 与 Magisk 共用这一份（纯函数，无 I/O）。
+// 单个节点与策略组：分享链接解析、各协议与策略组的表单字段。LuCI 与 Magisk 共用这一份（纯函数，无 I/O）。
 // LuCI 由 luci/scripts/sync-template.sh 包装为 mihomo/proxylink.js；Magisk 构建时原样复制，页面中为 globalThis.mihomoProxyLink。
 // 解析得到的是 mihomo 的 proxies 条目；协议细节由内核在保存前的 mihomo -t 校验兜底。
 (function (root, factory) {
@@ -639,7 +639,8 @@
 
   // 字段值 → 输入框文字（bool 保持布尔）
   function toInput(field, v) {
-    if (field.kind === 'bool') return v === true;
+    if (field.kind === 'bool') return v == null ? field.def === true : v === true;
+    if (field.kind === 'members' || field.kind === 'providers') return Array.isArray(v) ? v.map(String) : [];
     if (v == null) return '';
     if (Array.isArray(v)) return v.join(', ');
     return String(v);
@@ -647,9 +648,25 @@
 
   // 输入框文字 → 字段值；格式不对时抛出带字段名的错误
   function fromInput(field, raw) {
-    if (field.kind === 'bool') return raw === true || raw === 'true' ? true : null; // 布尔字段默认都是 false，不勾选时不写
+    if (field.kind === 'bool') {
+      // 与默认值相同时不写；默认开启的字段（def: true）关闭时才写 false
+      const on = raw === true || raw === 'true';
+      return on === (field.def === true) ? null : on;
+    }
+    if (field.kind === 'members' || field.kind === 'providers') {
+      const out = [];
+      for (const x of Array.isArray(raw) ? raw : String(raw || '').split(/[,\n]/)) {
+        const t = String(x).trim();
+        if (t && out.indexOf(t) < 0) out.push(t);
+      }
+      return out.length ? out : null;
+    }
     const s = String(raw == null ? '' : raw).trim();
     if (s === '') return null;
+    if (field.kind === 'num') {
+      if (!/^\d+(\.\d+)?$/.test(s)) throw new Error(field.label + '需要填写数字');
+      return Number(s);
+    }
     if (field.kind === 'int') {
       if (!/^\d+$/.test(s)) throw new Error(field.label + '需要填写整数');
       return Number(s);
@@ -682,6 +699,115 @@
     }
   }
 
+  /* ---------- 策略组表单 ---------- */
+
+  // 类型与字段对齐 liuran001/mihomo（vernesong smart 分支）：relay 已被内核移除，链式代理改用节点的 dialer-proxy
+  const AUTO_GROUPS = ['smart', 'url-test', 'fallback', 'load-balance'];
+  const PREFER_GROUPS = ['smart', 'url-test', 'load-balance'];
+  const GROUP_TYPES = [
+    { type: 'select', label: '手动选择', help: '在面板里自己点选用哪个出站，适合「节点选择」这类总开关' },
+    { type: 'smart', label: 'Smart 智能择优', help: '按每个连接的实际表现自动挑选成员，并记住哪个节点更适合哪类目标' },
+    { type: 'url-test', label: '自动测速', help: '定期测延迟，自动使用最快的成员' },
+    { type: 'fallback', label: '故障转移', help: '按顺序使用第一个能连通的成员，挂了自动换下一个' },
+    { type: 'load-balance', label: '负载均衡', help: '把连接分散到多个成员上' }
+  ];
+  const onAuto = { key: 'type', in: AUTO_GROUPS };
+  const onPrefer = { key: 'type', in: PREFER_GROUPS };
+  const onSmart = { key: 'type', in: ['smart'] };
+
+  // members：有序的出站名列表（节点、策略组、DIRECT 等）；providers：订阅名列表
+  const GROUP_FIELDS = [
+    F('name', '名称', 'text', { required: true, help: '规则和其他策略组用这个名字引用它，不能包含英文逗号' }),
+    F('type', '类型', 'enum', { required: true, options: GROUP_TYPES.map(t => [t.type, t.label]) }),
+    F('proxies', '成员', 'members', { help: '按顺序排列；可以选单个节点、其他策略组，或 DIRECT（直连）、REJECT（拦截）' }),
+    F('use', '订阅', 'providers', { help: '把所选订阅里的节点加进来' }),
+    F('include-all-providers', '包含全部订阅', 'bool', { help: '以后新增的订阅也会自动加入' }),
+    F('include-all-proxies', '包含全部单个节点', 'bool', { help: '配置里直接写的节点全部加入' }),
+    F('filter', '筛选节点', 'text', { help: '只保留名称匹配这个正则的节点（只作用于订阅和自动包含的节点），例如 (?i)港|hk' }),
+    F('url', '测速地址', 'text', { when: onAuto, placeholder: 'https://www.gstatic.com/generate_204' }),
+    F('interval', '测速间隔（秒）', 'int', { when: onAuto, placeholder: '300' }),
+    F('prefer-udp', '优先能转发 UDP 的成员', 'bool', { when: onPrefer, help: '经探测确认 UDP 可用的成员优先，适合游戏、语音通话、QUIC' }),
+    F('prefer-ipv6', '优先有 IPv6 的成员', 'bool', { when: onPrefer, help: '经探测确认 IPv6 出站可用的成员优先' }),
+    F('penalize-unstable', '降权不稳定的成员', 'bool', { when: onPrefer, help: '经常连上却收不到数据（断流）的成员排到后面，不会直接剔除' }),
+    F('prefer-asn', '同一服务固定出口', 'bool', { when: onSmart, help: '按目标所属网络（ASN）归类，同一服务尽量走同一个成员，减少跳变' }),
+    F('policy-priority', '成员优先级', 'text', { when: onSmart,
+      help: '按名称调整优先级，格式「正则:系数」，多条用英文分号分隔；系数大于 1 更优先、小于 1 靠后，例如 (?i)iplc:1.5;备用:0.3' }),
+    F('tolerance', '切换容差（毫秒）', 'int', { when: { key: 'type', in: ['url-test', 'smart'] }, adv: true, help: '新成员要比当前快这么多才切换，避免来回跳' }),
+    F('strategy', '分配方式', 'enum', { when: { key: 'type', in: ['load-balance'] },
+      options: [['', '默认（同一目标走同一出站）'], ['consistent-hashing', 'consistent-hashing'], ['round-robin', '轮流使用'], ['sticky-sessions', 'sticky-sessions']] }),
+    F('uselightgbm', '使用 LightGBM 模型', 'bool', { when: onSmart, adv: true, help: '用机器学习模型给成员打分，需要模型文件（全局的 lgbm-url）' }),
+    F('collectdata', '收集择优数据', 'bool', { when: onSmart, adv: true, help: '记录连接表现，用于训练模型' }),
+    F('sample-rate', '采样比例', 'num', { when: onSmart, adv: true, placeholder: '1', help: '只影响 LightGBM 训练样本的采集比例（0–1），不是省电开关' }),
+    F('lazy', '闲置时不测速', 'bool', { when: onAuto, adv: true, def: true, help: '没有流量经过时暂停测速，省电省流量' }),
+    F('timeout', '测速超时（毫秒）', 'int', { when: onAuto, adv: true, placeholder: '5000' }),
+    F('max-failed-times', '失败几次后重新测速', 'int', { when: onAuto, adv: true, placeholder: '5' }),
+    F('expected-status', '期望的状态码', 'text', { when: onAuto, adv: true, help: '例如 204 或 200/204' }),
+    F('empty-fallback', '组为空时使用', 'policy', { adv: true, help: '筛选后一个成员都没有时改用这个出站（只能选节点或 DIRECT 等，不能选策略组），默认 COMPATIBLE' }),
+    F('include-all', '包含全部节点与订阅', 'bool', { adv: true, help: '等于同时勾选「包含全部订阅」和「包含全部单个节点」' }),
+    F('exclude-filter', '排除节点', 'text', { adv: true, help: '名称匹配这个正则的节点不加入' }),
+    F('exclude-type', '排除协议', 'text', { adv: true, help: '按协议排除，例如 Shadowsocks|Http' }),
+    F('disable-udp', '禁用 UDP', 'bool', { adv: true }),
+    F('hidden', '在面板中隐藏', 'bool', { adv: true }),
+    F('icon', '图标', 'text', { adv: true, help: '面板里显示的图标地址' })
+  ];
+
+  function groupType(type) {
+    return GROUP_TYPES.find(t => t.type === type) || null;
+  }
+
+  function groupValues(group) {
+    const out = {};
+    for (const f of GROUP_FIELDS) out[f.key] = toInput(f, getPath(group || {}, f.key));
+    return out;
+  }
+
+  // 策略组的检查：返回错误文字或 null
+  function checkGroup(group) {
+    const name = String(group.name || '');
+    if (!name.trim() || name !== name.trim()) return '名称不能为空，首尾不能有空格';
+    if (/[,\x00-\x1f\x7f]/.test(name) || name.length > 128) return '名称不能包含英文逗号，最长 128 个字符';
+    if (!groupType(group.type)) return '请选择类型';
+    const members = Array.isArray(group.proxies) ? group.proxies : [];
+    if (members.indexOf(name) >= 0) return '成员里不能包含自己';
+    const sources = members.length || (Array.isArray(group.use) && group.use.length) ||
+      group['include-all'] === true || group['include-all-proxies'] === true || group['include-all-providers'] === true;
+    if (!sources) return '至少要有一个成员、订阅，或勾选「包含全部」';
+    return null;
+  }
+
+  // 由表单值生成策略组：保留表单未覆盖的字段，隐藏字段清除。返回 { group } 或 { error }
+  function buildGroup(base, raw) {
+    try {
+      const group = JSON.parse(JSON.stringify(base || {}));
+      for (const f of GROUP_FIELDS) if (f.key in raw) setPath(group, f.key, fromInput(f, raw[f.key]));
+      for (const f of GROUP_FIELDS) if (!visible(f, group)) setPath(group, f.key, null);
+      // 名称与类型放在最前面
+      const out = { name: group.name, type: group.type };
+      for (const k of Object.keys(group)) if (k !== 'name' && k !== 'type') out[k] = group[k];
+      const err = checkGroup(out);
+      return err ? { error: err } : { group: out };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  // 列表展示用的摘要：类型 · 成员 · 订阅
+  function groupSummary(group) {
+    const g = group || {};
+    const t = groupType(g.type);
+    const parts = [t ? t.label : String(g.type || '?')];
+    const members = Array.isArray(g.proxies) ? g.proxies.length : 0;
+    if (members) parts.push(members + ' 个成员');
+    if (g['include-all'] === true) parts.push('全部节点与订阅');
+    else {
+      if (g['include-all-providers'] === true) parts.push('全部订阅');
+      else if (Array.isArray(g.use) && g.use.length) parts.push('订阅 ' + g.use.join('、'));
+      if (g['include-all-proxies'] === true) parts.push('全部单个节点');
+    }
+    if (g.filter) parts.push('筛选 ' + g.filter);
+    return parts.join(' · ');
+  }
+
   // 列表展示用的摘要：类型 · 服务器:端口 · 传输
   function summary(node) {
     const p = protocol(node && node.type);
@@ -694,5 +820,6 @@
   }
 
   return Object.freeze({ MAX_LINKS, PROTOCOLS, BASE, COMMON, parseLink, parseText, uniqueName, protocol, fields, getPath, setPath, visible, applyForm, check,
-    toInput, fromInput, formValues, buildNode, summary, b64 });
+    toInput, fromInput, formValues, buildNode, summary, b64,
+    GROUP_TYPES, GROUP_FIELDS, groupType, groupValues, checkGroup, buildGroup, groupSummary });
 });

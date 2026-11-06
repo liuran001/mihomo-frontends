@@ -76,11 +76,12 @@ function input(field, value, policies, self) {
 }
 
 function readInput(el) {
+	if (typeof el.mhValue === 'function') return el.mhValue();
 	return el.type === 'checkbox' ? el.checked : el.value;
 }
 
 return baseclass.extend({
-	groupChoices, pickedGroups, groupText,
+	groupChoices, pickedGroups, groupText, input, readInput,
 
 	/* ctx：{ sec（sections.proxies）, rev, apply(promise) } */
 	card(ctx) {

@@ -427,6 +427,68 @@ ok(run([{ op: 'proxy.delete', name: 'DNS_Hijack' }]).error, '内置 DNS 出站�
 let only = 'proxies:\n  - {name: a, type: socks5, server: 1.1.1.1, port: 1}\nproxy-groups:\n  - {name: g, type: select, proxies: [a]}\nrules:\n  - MATCH,g\n';
 ok(index(run([{ op: 'proxy.delete', name: 'a' }], only).error ?? '', '只包含') >= 0, '不能删掉组里唯一的出站');
 
+/* ---------- 策略组 ---------- */
+
+U.write_file(P.CONFIG, FIXTURE);
+let sg = F.sections(['groups']).groups;
+let hk = find(sg, '香港');
+ok(hk && index(hk.inherited, 'use') >= 0 && index(hk.inherited, 'filter') < 0 && hk.data.type == 'smart', '策略组区段带完整数据与继承字段');
+ok(index(join('、', hk.refs), '规则第 3 条') >= 0, '策略组区段列出引用', hk.refs);
+
+let JP = { name: '日本', type: 'smart', use: ['甲'], filter: '(?i)日|jp', 'prefer-udp': true, 'prefer-asn': true, 'policy-priority': '(?i)iplc:1.5', 'sample-rate': 0.5 };
+r = run([{ op: 'group.add', data: JP }]);
+x = X();
+eq([r.error, length(x['proxy-groups']), x['proxy-groups'][6].type, x['proxy-groups'][6]['policy-priority']], [null, 7, 'smart', '(?i)iplc:1.5'], 'group.add 添加 smart 组');
+ok(valid(), 'group.add 后 -t 通过');
+let gadd = (d) => run([{ op: 'group.add', data: d }]).error;
+ok(index(gadd({ ...JP, name: '香港' }) ?? '', '已被占用') >= 0, '策略组名称不能重复');
+ok(index(gadd({ ...JP, name: 'DIRECT' }) ?? '', '已被占用') >= 0, '不能用内置策略的名字');
+ok(index(gadd({ ...JP, proxies: ['不存在'] }) ?? '', '成员不存在') >= 0, '成员必须存在');
+ok(index(gadd({ ...JP, proxies: ['日本'] }) ?? '', '自己') >= 0, '成员不能包含自己');
+ok(index(gadd({ ...JP, use: ['无此订阅'] }) ?? '', '订阅不存在') >= 0, '订阅必须存在');
+ok(index(gadd({ name: '空', type: 'select' }) ?? '', '至少') >= 0, '至少要有一个来源');
+ok(gadd({ ...JP, type: 'relay' }), '不接受已移除的 relay 类型');
+ok(gadd({ ...JP, '<<': { x: 1 } }), '拒绝合并键');
+
+// 改名：规则、其他组的成员（含锚点里的列表）一起改；合并键保留
+r = run([{ op: 'group.set', name: '香港', data: { ...hk.data, name: '港区', filter: '(?i)港|hk' } }]);
+x = X();
+eq([r.error, x['proxy-groups'][2].name, x['proxy-groups'][2].filter, x.rules[2], x['proxy-groups'][0].proxies[2], x.pr.proxies[1]],
+	[null, '港区', '(?i)港|hk', 'DOMAIN-SUFFIX,example.org,港区', '港区', '港区'], 'group.set 改名同步引用');
+ok(match(fs.readfile(tmp), /name: 港区, <<: \*use/), '改名后仍使用锚点', fs.readfile(tmp));
+ok(valid(), '改名后 -t 通过');
+U.write_file(tmp, FIXTURE);
+r = F.apply_ops(tmp, [{ op: 'group.set', name: '香港', data: hk.data }]);
+eq([r.error, fs.readfile(tmp)], [null, FIXTURE], '未改动时文件不变');
+let autoGroup = find(sg, '自动选择').data;
+ok(index(run([{ op: 'group.set', name: '自动选择', data: { name: '自动选择', type: 'select', proxies: ['DIRECT'] } }]).error ?? '', '继承自锚点') >= 0,
+	'不能删除继承自锚点的字段');
+r = run([{ op: 'group.set', name: '自动选择', data: { ...autoGroup, tolerance: 50, 'prefer-ipv6': true } }]);
+x = X();
+eq([r.error, x['proxy-groups'][4].tolerance, x['proxy-groups'][4]['prefer-ipv6'], x['proxy-groups'][4].use], [null, 50, true, ['甲', '乙', 'Kitty']], '修改锚点组的自有字段');
+r = run([{ op: 'group.set', name: '单独', data: { name: '单独', type: 'url-test', use: ['甲'], url: 'https://cp.cloudflare.com', interval: 600 } }]);
+x = X();
+eq([r.error, x['proxy-groups'][5]], [null, { name: '单独', type: 'url-test', use: ['甲'], url: 'https://cp.cloudflare.com', interval: 600 }], '修改普通组的类型与字段');
+ok(valid(), '修改后 -t 通过');
+ok(run([{ op: 'group.set', name: '单独', data: { name: '节点选择', type: 'select', use: ['甲'] } }]).error, '改名不能冲突');
+ok(run([{ op: 'group.set', name: '无此组', data: JP }]).error, '拒绝不存在的组');
+
+// 删除：被规则引用时拒绝；从其他组的成员里移除
+r = run([{ op: 'group.delete', name: '香港' }]);
+ok(r.error && index(r.error, '规则第 3 条') >= 0, '被规则引用的组不能删除', r.error);
+r = run([{ op: 'group.delete', name: '全部节点' }]);
+x = X();
+eq([r.error, length(x['proxy-groups']), index(x['proxy-groups'][0].proxies, '全部节点'), index(x.pr.proxies, '全部节点')], [null, 5, -1, -1], 'group.delete 同时移出其他组');
+ok(valid(), 'group.delete 后 -t 通过');
+let anch = 'proxy-groups:\n  - &a {name: a, type: select, proxies: [DIRECT]}\n  - {<<: *a, name: b}\nrules:\n  - MATCH,b\n';
+ok(index(run([{ op: 'group.delete', name: 'a' }], anch).error ?? '', '锚点') >= 0, '被锚点继承的组不能删除');
+
+// 排序
+r = run([{ op: 'group.move', name: '单独', to: 0 }]);
+eq([r.error, names(X()['proxy-groups'])], [null, ['单独', '节点选择', 'dns', '香港', '全部节点', '自动选择']], 'group.move 调整顺序');
+ok(valid(), '排序后 -t 通过');
+ok(run([{ op: 'group.move', name: '单独', to: 9 }]).error, '拒绝越界位置');
+
 fs.unlink(tmp);
 fs.unlink(P.RUN_DIR + '/orig.yaml');
 eq(length(filter(fs.lsdir(P.RUN_DIR), (n) => match(n, /^(forms|edit|ops)-/))), 0, '不留临时文件');

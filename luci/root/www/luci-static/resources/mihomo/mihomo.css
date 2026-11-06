@@ -411,6 +411,12 @@ div.mh-actions.mh-actions-left{justify-content:flex-start}
 .mh-pnode-meta>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .mh-pnode-actions{display:flex;gap:6px;flex-shrink:0}
 .mh-group-pick{display:flex;flex-wrap:wrap;gap:6px 14px}
+.mh-members{display:flex;flex-direction:column;gap:6px}
+.mh-member-list{display:flex;flex-wrap:wrap;gap:6px}
+.mh-member{padding:3px 6px 3px 10px;gap:6px}
+.mh-member-i{color:var(--text-muted,#5f666d);font-size:.7rem}
+.mh-member-btn{border:0;background:none;cursor:pointer;padding:0 4px;color:var(--text-muted,#5f666d);font-size:.85rem;line-height:1}
+.mh-member-btn:hover{color:var(--text,#1f2328)}
 .mh-adv{margin:6px 0;border-top:1px dashed var(--hairline,#e3e6ea);padding-top:6px}
 .mh-adv>summary{cursor:pointer;font-weight:600;padding:4px 0}
 .mh-req{color:var(--mh-bad-t,#c00)}

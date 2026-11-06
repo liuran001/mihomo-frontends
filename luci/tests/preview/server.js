@@ -24,8 +24,8 @@ const MOCK_SECRET = 'preview';
 const CACHE_WWW = path.join(__dirname, '.cache/www');
 const mock = MOCK ? require('./mock') : null;
 const ROOT = path.join(__dirname, '../../root');
-const VIEWS = ['overview', 'proxies', 'connections', 'providers', 'rules', 'settings', 'config', 'core', 'setup', 'logs'];
-const TITLES = { overview: '概览', proxies: '代理', connections: '连接', providers: '订阅', rules: '规则', settings: '设置', config: '配置文件', core: '内核', setup: '设置向导', logs: '日志' };
+const VIEWS = ['overview', 'proxies', 'connections', 'providers', 'groups', 'rules', 'settings', 'config', 'core', 'setup', 'logs'];
+const TITLES = { overview: '概览', proxies: '代理', connections: '连接', providers: '订阅与节点', groups: '策略组', rules: '规则', settings: '设置', config: '配置文件', core: '内核', setup: '设置向导', logs: '日志' };
 const LOCAL_PREFIXES = ['/luci-static/resources/mihomo/', '/luci-static/resources/view/mihomo/'];
 const SAFE_WRITES = ['validate'];
 // LuCI 运行时自身在启动时调用的只读方法，原样转发
