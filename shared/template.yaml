@@ -1,11 +1,12 @@
 # ============================================================
 # mihomo 内置模板（适配 liuran001/mihomo：eBPF 入站 + Smart 策略组）
-# 结构来自实际使用中的手机/PC 配置：多机场订阅 → 地区 Smart 组 → 分应用策略组 → geosite 分流。
+# 结构来自实际使用中的手机/PC 配置：多机场订阅 → 地区 Smart 组 → 分应用策略组 → mrs 规则集分流。
 # 由 LuCI「向导」与 Magisk 模块向导渲染：以 #@ 开头的行会换成订阅、面板密钥、镜像地址与下联接口，其余原样写入。
 # 渲染结果是普通的 mihomo 配置，之后可以在「订阅」「策略组」「配置文件」等页面继续修改。
 #   - 透明代理：eBPF hybrid，本机流量走 cgroup，下联走 packet_rewrite；国内 IP 在内核直连
 #   - DNS：redir-host，53 端口由 DNS_Hijack 出站接管，国内域名用国内上游，海外走「dns」组
-#   - 规则集与面板走 GitHub 镜像（向导里的「镜像前缀」，为空时直连 GitHub）
+#   - 分流规则集用 MetaCubeX meta-rules-dat 的 mrs（经 jsDelivr，国内可直连），按需加载，比整份 geosite.dat 省内存
+#   - 面板与 Fake-IP 规则集走 GitHub 镜像（向导里的「镜像前缀」，为空时直连 GitHub）
 #   - 不含任何订阅地址或密钥
 # 参考文档：https://wiki.metacubex.one/config
 # ============================================================
@@ -36,6 +37,10 @@ use: &use
   timeout: 1500
   lazy: true
 
+# 锚点：规则集（rule-providers）公共设置
+rd: &rd {type: http, behavior: domain, format: mrs, interval: 86400}
+ri: &ri {type: http, behavior: ipcidr, format: mrs, interval: 86400}
+
 # 订阅
 proxy-providers:
   #@providers
@@ -45,7 +50,8 @@ mode: rule
 ipv6: true
 allow-lan: true
 bind-address: '*'
-unified-delay: false
+# 测延迟时先建好连接再计时，不同协议的握手开销不计入，节点之间可以公平比较
+unified-delay: true
 tcp-concurrent: true
 log-level: warning
 # 路由器上下联流量没有本地进程可查，关掉以省 CPU
@@ -66,7 +72,7 @@ profile:
   store-selected: true
   store-fake-ip: true
 
-# Geo 数据库（jsDelivr 镜像，路由器直连也能下载）
+# Geo 数据库：模板的分流全部用 mrs 规则集，不加载这些文件；只在自己添加 GEOSITE/GEOIP 规则时才会下载
 geo-auto-update: false
 geox-url:
   geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
@@ -77,6 +83,11 @@ geox-url:
 sniffer:
   enable: true
   override-destination: false
+  # 设备自带 DoH 或写死 IP 时拿不到域名，嗅探后域名规则才能生效
+  parse-pure-ip: true
+  skip-domain:
+    - Mijia Cloud
+    - +.push.apple.com
   sniff:
     HTTP:
       ports: [80, 8080-8880]
@@ -104,12 +115,13 @@ dns:
     - 119.29.29.29
   nameserver-policy:
     rule-set:AWAvenue-Ads: rcode://success
-    "geosite:cn,private":
+    "rule-set:cn,private,apple-cn,microsoft-cn,steam-cn,games-cn":
       - 223.5.5.5
       - 119.29.29.29
+  # 海外域名经「dns」策略组发出（默认跟随节点选择）
   nameserver:
-    - https://8.8.8.8/dns-query#节点选择
-    - https://1.1.1.1/dns-query#节点选择
+    - https://8.8.8.8/dns-query#dns
+    - https://1.1.1.1/dns-query#dns
 
 proxies:
   # 接管 53 端口的 DNS 请求，交给上面的 dns 模块解析
@@ -119,44 +131,48 @@ proxy-groups:
   - name: 节点选择
     type: select
     proxies: [全部节点, 自动选择, 香港, 台湾, 日本, 新加坡, 美国, 英国, 德国, 其它地区, DIRECT]
-    icon: https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Proxy.png
+    icon: https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Proxy.png
   # 海外域名解析所走的节点，一般跟随节点选择
-  - {name: dns, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Server.png"}
-  - {name: 广告拦截, type: select, proxies: [REJECT, DIRECT, 节点选择], icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Advertising.png"}
-  - {name: 学术, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Scholar.png"}
-  - {name: 境外AI, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/AI.png"}
-  - {name: Apple, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Apple.png"}
-  - {name: Google, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Google.png"}
-  - {name: Telegram, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Telegram.png"}
-  - {name: Twitter, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Twitter.png"}
-  - {name: Pixiv, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Pixiv.png"}
-  - {name: ehentai, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/ehentai.png"}
-  - {name: 巴哈姆特, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Bahamut.png"}
-  - {name: YouTube, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/YouTube.png"}
-  - {name: NETFLIX, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Netflix.png"}
-  - {name: TikTok, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/TikTok.png"}
-  - {name: Spotify, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Spotify.png"}
-  - {name: Github, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/GitHub.png"}
-  - {name: Steam, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Steam.png"}
-  - {name: OneDrive, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/OneDrive.png"}
-  - {name: 微软服务, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Microsoft.png"}
+  - {name: dns, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Server.png"}
+  - {name: 广告拦截, type: select, proxies: [REJECT, DIRECT, 节点选择], icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Advertising.png"}
+  - {name: 学术, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Scholar.png"}
+  - {name: 境外AI, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/AI.png"}
+  - {name: Apple, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Apple.png"}
+  - {name: Google, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Google.png"}
+  - {name: Telegram, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Telegram.png"}
+  - {name: Twitter, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Twitter.png"}
+  - {name: Pixiv, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/lige47/QuanX-icon-rule@main/icon/04ProxySoft/pixiv.png"}
+  - {name: ehentai, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/lige47/QuanX-icon-rule@main/icon/04ProxySoft/exhentai.png"}
+  - {name: 巴哈姆特, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Bahamut.png"}
+  - {name: YouTube, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/YouTube.png"}
+  - {name: NETFLIX, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Netflix.png"}
+  - {name: Disney+, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Disney+.png"}
+  - {name: TikTok, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/TikTok.png"}
+  - {name: Spotify, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Spotify.png"}
+  - {name: Github, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/GitHub.png"}
+  - {name: Steam, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Steam.png"}
+  - {name: 游戏, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Game.png"}
+  # 支付类网站对出口地区敏感，单独成组以便固定地区
+  - {name: PayPal, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/PayPal.png"}
+  - {name: OneDrive, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/OneDrive.png"}
+  - {name: 微软服务, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Microsoft.png"}
   - name: 国内
     type: select
     proxies: [DIRECT, 节点选择, 香港, 台湾, 日本, 新加坡, 美国, 英国, 德国, 其它地区, 全部节点, 自动选择]
-    icon: https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/China.png
+    icon: https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/China.png
   # 所有规则都没匹配到的流量（漏网之鱼）
-  - {name: 其他, <<: *pr, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/ForeignMedia.png"}
+  - {name: 其他, <<: *pr, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/ForeignMedia.png"}
   # 以下是地区分组（Smart 智能择优）；exclude-filter 去掉订阅里的流量、到期等说明节点
-  - {name: 香港, <<: *use, filter: "(?i)(香港|🇭🇰|(^|[^A-Za-z0-9])(Hong[ _-]?Kong|HKG|HK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: &info "(?i)(流量|剩余|到期|过期|重置|套餐|官网|网站|频道|订阅|更新|客户端|请收藏|Traffic|Expire|Reset|Remaining|Bandwidth|Quota|TG[ _-]?bot)", icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Hong_Kong.png"}
-  - {name: 台湾, <<: *use, filter: "(?i)(台湾|臺灣|台灣|台北|臺北|🇹🇼|(^|[^A-Za-z0-9])(Taiwan|Taipei|TWN|TPE|TW)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Taiwan.png"}
-  - {name: 日本, <<: *use, filter: "(?i)(日本|东京|東京|大阪|🇯🇵|(^|[^A-Za-z0-9])(Japan|Tokyo|Osaka|JPN|NRT|HND|KIX|JP)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Japan.png"}
-  - {name: 新加坡, <<: *use, filter: "(?i)(新加坡|狮城|🇸🇬|(^|[^A-Za-z0-9])(Singapore|SGP|SIN|SG)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Singapore.png"}
-  - {name: 美国, <<: *use, filter: "(?i)(美国|美國|🇺🇸|🇺🇲|(^|[^A-Za-z0-9])(United[ _-]?States|America|USA|US)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/United_States.png"}
-  - {name: 英国, <<: *use, filter: "(?i)(英国|英國|🇬🇧|(^|[^A-Za-z0-9])(United[ _-]?Kingdom|Great[ _-]?Britain|Britain|England|GBR|UK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/United_Kingdom.png"}
-  - {name: 德国, <<: *use, filter: "(?i)(德国|德國|🇩🇪|(^|[^A-Za-z0-9])(Germany|Deutschland|DEU|DE)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Germany.png"}
-  - {name: 其它地区, <<: *use, filter: ".*", exclude-filter: "(?i)(流量|剩余|到期|过期|重置|套餐|官网|网站|频道|订阅|更新|客户端|请收藏|Traffic|Expire|Reset|Remaining|Bandwidth|Quota|TG[ _-]?bot|香港|🇭🇰|(^|[^A-Za-z0-9])(Hong[ _-]?Kong|HKG|HK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|台湾|臺灣|台灣|台北|臺北|🇹🇼|(^|[^A-Za-z0-9])(Taiwan|Taipei|TWN|TPE|TW)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|日本|东京|東京|大阪|🇯🇵|(^|[^A-Za-z0-9])(Japan|Tokyo|Osaka|JPN|NRT|HND|KIX|JP)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|美国|美國|🇺🇸|🇺🇲|(^|[^A-Za-z0-9])(United[ _-]?States|America|USA|US)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|新加坡|狮城|🇸🇬|(^|[^A-Za-z0-9])(Singapore|SGP|SIN|SG)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|英国|英國|🇬🇧|(^|[^A-Za-z0-9])(United[ _-]?Kingdom|Great[ _-]?Britain|Britain|England|GBR|UK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|德国|德國|🇩🇪|(^|[^A-Za-z0-9])(Germany|Deutschland|DEU|DE)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|🇨🇳)", icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/World_Map.png"}
-  - {name: 全部节点, <<: *use, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Proxy.png"}
-  - {name: 自动选择, <<: *use, tolerance: 2, type: url-test, icon: "https://raw.githubusercontent.com/Koolson/Qure/refs/heads/master/IconSet/Color/Auto.png"}
+  - {name: 香港, <<: *use, filter: "(?i)(香港|🇭🇰|(^|[^A-Za-z0-9])(Hong[ _-]?Kong|HKG|HK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: &info "(?i)(流量|剩余|到期|过期|重置|套餐|官网|网站|频道|订阅|更新|客户端|请收藏|Traffic|Expire|Reset|Remaining|Bandwidth|Quota|TG[ _-]?bot)", icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Hong_Kong.png"}
+  - {name: 台湾, <<: *use, filter: "(?i)(台湾|臺灣|台灣|台北|臺北|🇹🇼|(^|[^A-Za-z0-9])(Taiwan|Taipei|TWN|TPE|TW)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Taiwan.png"}
+  - {name: 日本, <<: *use, filter: "(?i)(日本|东京|東京|大阪|🇯🇵|(^|[^A-Za-z0-9])(Japan|Tokyo|Osaka|JPN|NRT|HND|KIX|JP)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Japan.png"}
+  - {name: 新加坡, <<: *use, filter: "(?i)(新加坡|狮城|🇸🇬|(^|[^A-Za-z0-9])(Singapore|SGP|SIN|SG)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Singapore.png"}
+  - {name: 美国, <<: *use, filter: "(?i)(美国|美國|🇺🇸|🇺🇲|(^|[^A-Za-z0-9])(United[ _-]?States|America|USA|US)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/United_States.png"}
+  - {name: 英国, <<: *use, filter: "(?i)(英国|英國|🇬🇧|(^|[^A-Za-z0-9])(United[ _-]?Kingdom|Great[ _-]?Britain|Britain|England|GBR|UK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/United_Kingdom.png"}
+  - {name: 德国, <<: *use, filter: "(?i)(德国|德國|🇩🇪|(^|[^A-Za-z0-9])(Germany|Deutschland|DEU|DE)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$))", exclude-filter: *info, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Germany.png"}
+  - {name: 其它地区, <<: *use, filter: ".*", exclude-filter: "(?i)(流量|剩余|到期|过期|重置|套餐|官网|网站|频道|订阅|更新|客户端|请收藏|Traffic|Expire|Reset|Remaining|Bandwidth|Quota|TG[ _-]?bot|香港|🇭🇰|(^|[^A-Za-z0-9])(Hong[ _-]?Kong|HKG|HK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|台湾|臺灣|台灣|台北|臺北|🇹🇼|(^|[^A-Za-z0-9])(Taiwan|Taipei|TWN|TPE|TW)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|日本|东京|東京|大阪|🇯🇵|(^|[^A-Za-z0-9])(Japan|Tokyo|Osaka|JPN|NRT|HND|KIX|JP)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|美国|美國|🇺🇸|🇺🇲|(^|[^A-Za-z0-9])(United[ _-]?States|America|USA|US)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|新加坡|狮城|🇸🇬|(^|[^A-Za-z0-9])(Singapore|SGP|SIN|SG)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|英国|英國|🇬🇧|(^|[^A-Za-z0-9])(United[ _-]?Kingdom|Great[ _-]?Britain|Britain|England|GBR|UK)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|德国|德國|🇩🇪|(^|[^A-Za-z0-9])(Germany|Deutschland|DEU|DE)([ _-]?[A-Z]?[0-9]{1,3})?([^A-Za-z0-9]|$)|🇨🇳)", icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/World_Map.png"}
+  - {name: 全部节点, <<: *use, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Proxy.png"}
+  - {name: 自动选择, <<: *use, tolerance: 50, type: url-test, icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Auto.png"}
 
 rule-providers:
   Fake-IP-Filter:
@@ -172,16 +188,48 @@ rule-providers:
     format: mrs
     interval: 86400
     path: ./rule_provider/AWAvenue-Ads.mrs
-    url: "https://raw.githubusercontent.com/TG-Twilight/AWAvenue-Ads-Rule/main/Filters/AWAvenue-Ads-Rule-Clash.mrs"
-    proxy: 节点选择 # raw.githubusercontent.com 直连不稳定
+    # jsDelivr 国内可直连；首次启动时订阅还没拉下来，经代理下载会失败
+    url: "https://testingcf.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.mrs"
   CN-IP:
     type: http
     behavior: ipcidr
     format: mrs
     interval: 86400
     path: ./rule_provider/cn-ip.mrs
-    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
-    proxy: 节点选择
+    url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs"
+  # 以下来自 MetaCubeX/meta-rules-dat（meta 分支），与 geosite/geoip 同名分类内容一致
+  private: {<<: *rd, path: ./rule_provider/private.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs"}
+  cn: {<<: *rd, path: ./rule_provider/cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs"}
+  not-cn: {<<: *rd, path: ./rule_provider/not-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-!cn.mrs"}
+  scholar: {<<: *rd, path: ./rule_provider/scholar.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-scholar-!cn.mrs"}
+  ai: {<<: *rd, path: ./rule_provider/ai.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-!cn.mrs"}
+  apple-cn: {<<: *rd, path: ./rule_provider/apple-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple-cn.mrs"}
+  apple: {<<: *rd, path: ./rule_provider/apple.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple.mrs"}
+  ehentai: {<<: *rd, path: ./rule_provider/ehentai.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/ehentai.mrs"}
+  github: {<<: *rd, path: ./rule_provider/github.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/github.mrs"}
+  twitter: {<<: *rd, path: ./rule_provider/twitter.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/twitter.mrs"}
+  youtube: {<<: *rd, path: ./rule_provider/youtube.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/youtube.mrs"}
+  google: {<<: *rd, path: ./rule_provider/google.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs"}
+  google-cn: {<<: *rd, path: ./rule_provider/google-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google-cn.mrs"}
+  telegram: {<<: *rd, path: ./rule_provider/telegram.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/telegram.mrs"}
+  netflix: {<<: *rd, path: ./rule_provider/netflix.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/netflix.mrs"}
+  disney: {<<: *rd, path: ./rule_provider/disney.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/disney.mrs"}
+  tiktok: {<<: *rd, path: ./rule_provider/tiktok.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/tiktok.mrs"}
+  bahamut: {<<: *rd, path: ./rule_provider/bahamut.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/bahamut.mrs"}
+  spotify: {<<: *rd, path: ./rule_provider/spotify.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/spotify.mrs"}
+  pixiv: {<<: *rd, path: ./rule_provider/pixiv.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/pixiv.mrs"}
+  paypal: {<<: *rd, path: ./rule_provider/paypal.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/paypal.mrs"}
+  steam-cn: {<<: *rd, path: ./rule_provider/steam-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/steam@cn.mrs"}
+  steam: {<<: *rd, path: ./rule_provider/steam.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/steam.mrs"}
+  games-cn: {<<: *rd, path: ./rule_provider/games-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-games@cn.mrs"}
+  games: {<<: *rd, path: ./rule_provider/games.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-games.mrs"}
+  onedrive: {<<: *rd, path: ./rule_provider/onedrive.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/onedrive.mrs"}
+  microsoft-cn: {<<: *rd, path: ./rule_provider/microsoft-cn.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/microsoft@cn.mrs"}
+  microsoft: {<<: *rd, path: ./rule_provider/microsoft.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/microsoft.mrs"}
+  google-ip: {<<: *ri, path: ./rule_provider/google-ip.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/google.mrs"}
+  netflix-ip: {<<: *ri, path: ./rule_provider/netflix-ip.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/netflix.mrs"}
+  telegram-ip: {<<: *ri, path: ./rule_provider/telegram-ip.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs"}
+  twitter-ip: {<<: *ri, path: ./rule_provider/twitter-ip.mrs, url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/twitter.mrs"}
 
 rules:
   # 下联设备的 DNS 请求交给 dns 模块
@@ -212,36 +260,44 @@ rules:
   - DOMAIN,hhk.prod.ondemandconnectivity.com,香港
   - DOMAIN,snr.prod.ondemandconnectivity.com,香港
   - IP-CIDR,107.178.224.0/19,香港,no-resolve
+  # 可选：屏蔽海外 UDP 443（QUIC），让 YouTube 等回落到 TCP，部分机场 UDP 质量差时有用
+  # - AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((RULE-SET,cn)))),REJECT
   # 广告拦截
   - RULE-SET,AWAvenue-Ads,广告拦截
   # 应用分流
-  - GEOSITE,category-scholar-!cn,学术
-  - GEOSITE,category-ai-!cn,境外AI
-  - GEOSITE,apple,Apple
-  - GEOSITE,apple-cn,Apple
-  - GEOSITE,ehentai,ehentai
-  - GEOSITE,github,Github
-  - GEOSITE,twitter,Twitter
-  - GEOSITE,youtube,YouTube
-  - GEOSITE,google,Google
-  - GEOSITE,google-cn,Google
-  - GEOSITE,telegram,Telegram
-  - GEOSITE,netflix,NETFLIX
-  - GEOSITE,tiktok,TikTok
-  - GEOSITE,bahamut,巴哈姆特
-  - GEOSITE,spotify,Spotify
-  - GEOSITE,pixiv,Pixiv
-  - GEOSITE,steam@cn,DIRECT
-  - GEOSITE,steam,Steam
-  - GEOSITE,onedrive,OneDrive
-  - GEOSITE,microsoft,微软服务
-  - GEOSITE,geolocation-!cn,其他
-  - GEOIP,google,Google
-  - GEOIP,netflix,NETFLIX
-  - GEOIP,telegram,Telegram
-  - GEOIP,twitter,Twitter
-  - GEOSITE,CN,国内
-  - GEOIP,CN,国内
+  - RULE-SET,scholar,学术
+  - RULE-SET,ai,境外AI
+  # Apple、微软、游戏的国内 CDN 直连，其余走对应策略组
+  - RULE-SET,apple-cn,国内
+  - RULE-SET,apple,Apple
+  - RULE-SET,ehentai,ehentai
+  - RULE-SET,github,Github
+  - RULE-SET,twitter,Twitter
+  - RULE-SET,youtube,YouTube
+  - RULE-SET,google,Google
+  - RULE-SET,google-cn,Google
+  - RULE-SET,telegram,Telegram
+  - RULE-SET,netflix,NETFLIX
+  - RULE-SET,disney,Disney+
+  - RULE-SET,tiktok,TikTok
+  - RULE-SET,bahamut,巴哈姆特
+  - RULE-SET,spotify,Spotify
+  - RULE-SET,pixiv,Pixiv
+  - RULE-SET,paypal,PayPal
+  - RULE-SET,steam-cn,DIRECT
+  - RULE-SET,games-cn,国内
+  - RULE-SET,steam,Steam
+  - RULE-SET,games,游戏
+  - RULE-SET,onedrive,OneDrive
+  - RULE-SET,microsoft-cn,国内
+  - RULE-SET,microsoft,微软服务
+  - RULE-SET,not-cn,其他
+  - RULE-SET,google-ip,Google
+  - RULE-SET,netflix-ip,NETFLIX
+  - RULE-SET,telegram-ip,Telegram
+  - RULE-SET,twitter-ip,Twitter
+  - RULE-SET,cn,国内
+  - RULE-SET,CN-IP,国内
   # 局域网地址直连
   - IP-CIDR,10.0.0.0/8,DIRECT
   - IP-CIDR,172.16.0.0/12,DIRECT

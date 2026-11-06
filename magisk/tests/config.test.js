@@ -116,10 +116,11 @@ test('schema exposes LuCI-aligned sections with current values', () => {
   assert.equal(field('basic', 'log-level').value, 'warning');
   assert.equal(field('dns', 'dns.enhanced-mode').value, 'redir-host');
   assert.equal(field('ebpf', '@listener.network').value, 'tcp,udp');
-  assert.deepEqual([...field('ebpf', '@listener.bypass-rule-set').choices], ['CN-IP']);
+  assert.deepEqual([...field('ebpf', '@listener.bypass-rule-set').choices], ['CN-IP', 'google-ip', 'netflix-ip', 'telegram-ip', 'twitter-ip']);
   assert.equal(schema.providers[0].name, '机场');
   assert.equal(schema.providers[0].fields.find((item) => item.id === 'interval').value, 3600, 'merged anchor value is visible');
-  assert.equal(schema.ruleProviders.find((item) => item.name === 'CN-IP').used, false);
+  assert.equal(schema.ruleProviders.find((item) => item.name === 'CN-IP').used, true);
+  assert.equal(schema.ruleProviders.find((item) => item.name === 'Fake-IP-Filter').used, false);
   assert.equal(schema.summary.ebpf, true);
 });
 
@@ -165,9 +166,9 @@ test('providers can be added, edited and removed while keeping group references'
 });
 
 test('rule providers follow format/behavior rules and refuse deleting referenced sets', () => {
-  assert.throws(() => C.patch(rendered, [{ op: 'ruleProvider.delete', name: 'CN-IP' }]).content.length >= 0 &&
-    C.patch(C.patch(rendered, [{ op: 'ruleProvider.add', name: 'x', values: { url: 'https://e/x.mrs', format: 'mrs', behavior: 'classical' } }]).content, []),
-  /classical|没有要保存/);
+  assert.throws(() => C.patch(C.patch(rendered, [{ op: 'ruleProvider.add', name: 'x', values: { url: 'https://e/x.mrs', format: 'mrs', behavior: 'classical' } }]).content, []),
+    /classical|没有要保存/);
+  assert.throws(() => C.patch(rendered, [{ op: 'ruleProvider.delete', name: 'CN-IP' }]), /仍在引用/);
   const added = C.patch(rendered, [{ op: 'ruleProvider.add', name: 'ads', values: { url: 'https://e/ads.list', format: 'text', behavior: 'domain', proxy: 'DIRECT' } }]);
   const data = plain(added.content);
   assert.equal(data['rule-providers'].ads.path, './rule_provider/ads.list');
