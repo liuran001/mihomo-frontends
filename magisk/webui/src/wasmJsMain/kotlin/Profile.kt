@@ -45,6 +45,15 @@ import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.icon.extended.Link
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** 内核配置主页的目录：子页 id、标题、说明。按「流量怎么走」的顺序排列。 */
+private val PROFILE_LISTS = listOf(
+    Triple("rules", "分流规则", "按域名、IP、应用等条件决定流量走哪个策略组"),
+    Triple("groups", "策略组", "手动选择、Smart 智能择优、自动测速等出站分组"),
+    Triple("providers", "订阅", "机场提供的订阅链接，节点自动更新"),
+    Triple("nodes", "单个节点", "粘贴分享链接或手动填写的节点"),
+    Triple("ruleProviders", "规则集", "规则里引用的在线域名、IP 列表"),
+)
+
 internal data class ConfigField(
     val id: String,
     val path: List<String>,
@@ -115,6 +124,10 @@ internal object ProfileState {
     /** 策略组：同样显示暂存修改后的结果。 */
     var groups by mutableStateOf(GroupView())
     private var baseGroups = GroupView()
+    /** 分流规则：rules 为配置里的原样，ruleRows 为编辑中的列表（保存时生成一次 rules.set）。 */
+    var rules by mutableStateOf(RuleView())
+    var ruleRows by mutableStateOf<List<RuleRow>>(emptyList())
+    private var baseRuleExtras = RuleView()
     /** 待保存的修改：字段 id » 新值，以及集合操作。 */
     var edits by mutableStateOf<Map<String, JsonElement>>(emptyMap())
     var collectionOps by mutableStateOf<List<JsonObject>>(emptyList())
@@ -123,7 +136,9 @@ internal object ProfileState {
     var notice by mutableStateOf("")
     var loadedOnce = false
 
-    val dirty: Boolean get() = edits.isNotEmpty() || collectionOps.isNotEmpty()
+    val rulesDirty: Boolean
+        get() = ruleRows.size != rules.list.size || ruleRows.withIndex().any { (index, row) -> row.k != index || row.v != rules.list[index] }
+    val dirty: Boolean get() = edits.isNotEmpty() || collectionOps.isNotEmpty() || rulesDirty
 
     fun value(field: ConfigField): JsonElement = edits[field.id] ?: field.value
 
@@ -164,6 +179,9 @@ internal object ProfileState {
         baseNodes = nodes
         groups = groupView(schema["groups"])
         baseGroups = groups
+        rules = ruleView(schema["rules"])
+        baseRuleExtras = rules
+        ruleRows = rules.list.mapIndexed { index, rule -> RuleRow(index, rule) }
     }
 
     /** 暂存一项节点或策略组修改：先在本地连同已暂存的修改试算一遍，失败时抛出原因，成功后刷新节点列表。 */
@@ -173,6 +191,8 @@ internal object ProfileState {
         val schema = request("configSchema", json("content" to patched))
         nodes = nodeView(schema["nodes"])
         groups = groupView(schema["groups"])
+        // 新增或改名的策略组也能在规则里选；规则列表本身仍以原配置为准
+        ruleView(schema["rules"]).let { rules = rules.copy(policies = it.policies, ruleSets = it.ruleSets) }
         collectionOps = collectionOps + op
         notice = ""
     }
@@ -194,6 +214,8 @@ internal object ProfileState {
         collectionOps = emptyList()
         nodes = baseNodes
         groups = baseGroups
+        rules = baseRuleExtras
+        ruleRows = rules.list.mapIndexed { index, rule -> RuleRow(index, rule) }
         error = ""
     }
 
@@ -203,7 +225,15 @@ internal object ProfileState {
             val field = byId[id] ?: return@mapNotNull null
             JsonObject(mapOf("op" to JsonPrimitive("set"), "path" to JsonArray(field.path.map { JsonPrimitive(it) }), "value" to value))
         }
-        return JsonArray(sets + collectionOps)
+        // 规则先改（按原下标引用），之后的节点、策略组改名会同步到改过的规则里
+        val ruleOp = if (rulesDirty) listOf(JsonObject(mapOf("op" to JsonPrimitive("rules.set"), "items" to JsonArray(ruleRows.map { row ->
+            val unchanged = row.k != null && rules.list.getOrNull(row.k) == row.v
+            JsonObject(buildMap {
+                if (row.k != null) put("k", JsonPrimitive(row.k))
+                if (!unchanged) put("v", JsonPrimitive(row.v))
+            })
+        })))) else emptyList()
+        return JsonArray(sets + ruleOp + collectionOps)
     }
 
     /** 预检：在本地应用补丁并刷新界面，返回失败原因。 */
@@ -255,14 +285,18 @@ fun ProfilePage(onBack: () -> Unit) {
     var item by remember { mutableStateOf<Pair<String, ConfigItem?>?>(null) }
     var node by remember { mutableStateOf<NodeTarget?>(null) }
     var groupTarget by remember { mutableStateOf<GroupTarget?>(null) }
+    var ruleTarget by remember { mutableStateOf<RuleTarget?>(null) }
+    var ruleQuery by remember { mutableStateOf("") }
     var paste by remember { mutableStateOf(false) }
     var confirmSave by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { state.load() }
     val section = state.sections.firstOrNull { it.id == opened }
-    BackHandler(enabled = section != null) { opened = null }
+    // 订阅、节点、策略组、规则、规则集各自是一个子页，主页只做目录
+    val listTitle = PROFILE_LISTS.firstOrNull { it.first == opened }?.second
+    BackHandler(enabled = opened != null) { opened = null }
     Box(Modifier.fillMaxSize()) {
-        Page(title = section?.title ?: "内核配置", subtitle = section?.summary.orEmpty(),
-            navigationIcon = { BackIcon(if (section != null) ({ opened = null }) else onBack) },
+        Page(title = section?.title ?: listTitle ?: "内核配置", subtitle = section?.summary.orEmpty(),
+            navigationIcon = { BackIcon(if (opened != null) ({ opened = null }) else onBack) },
             bottomPadding = if (state.dirty) 88.dp else 0.dp) {
             banner(state.busy, BannerKind.Progress, "busy")
             banner(state.error, BannerKind.Error, "error")
@@ -276,6 +310,33 @@ fun ProfilePage(onBack: () -> Unit) {
                 }
                 return@Page
             }
+            when (opened) {
+                "rules" -> { rulesContent(ruleQuery, { ruleQuery = it }) { ruleTarget = it }; return@Page }
+                "providers" -> {
+                    group(null, "providers") {
+                        Caption("机场提供的订阅链接，节点会定期自动更新。策略组通过「订阅」选项引用它们。")
+                        for (provider in state.providers) {
+                            val url = provider.fields.firstOrNull { it.id == "url" }?.let { fieldText(it.value) }.orEmpty()
+                            ArrowRow(provider.name, url.ifEmpty { provider.type }, enabled = provider.editable) { item = "provider" to provider }
+                        }
+                        ArrowRow("添加订阅", "填入机场提供的订阅链接", startIcon = MiuixIcons.Regular.Add) { item = "provider" to null }
+                    }
+                    return@Page
+                }
+                "nodes" -> { group(null, "nodes") { NodeRows(onOpen = { node = NodeTarget(it) }, onPaste = { paste = true }) }; return@Page }
+                "groups" -> { group(null, "groups") { GroupRows(onOpen = { groupTarget = GroupTarget(it) }) }; return@Page }
+                "ruleProviders" -> {
+                    group(null, "ruleProviders") {
+                        Caption("从网上引用的一组域名或 IP，在规则里用「RULE-SET」类型引用，会定期自动更新。")
+                        for (ruleSet in state.ruleProviders) {
+                            val behavior = ruleSet.fields.firstOrNull { it.id == "behavior" }
+                            ArrowRow(ruleSet.name, behavior?.let { fieldDisplay(it, it.value) }, enabled = ruleSet.editable) { item = "ruleProvider" to ruleSet }
+                        }
+                        ArrowRow("添加规则集", "从网上引用一组域名或 IP 规则", startIcon = MiuixIcons.Regular.Add) { item = "ruleProvider" to null }
+                    }
+                    return@Page
+                }
+            }
             if (section != null) {
                 group(null, "section:${section.id}") {
                     if (!section.available) Caption("当前配置还没有开启透明代理，请先在「设置 › 重新运行向导」里完成本机优化。", Tone.warning)
@@ -284,35 +345,21 @@ fun ProfilePage(onBack: () -> Unit) {
                 return@Page
             }
             state.summary?.let { summary ->
-                item(key = "stats") {
-                    Row(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ProfileStat("节点", summary.string("proxies"), Modifier.weight(1f))
-                        ProfileStat("订阅", summary.string("providers"), Modifier.weight(1f))
-                        ProfileStat("策略组", summary.string("groups"), Modifier.weight(1f))
-                        ProfileStat("规则", summary.string("rules"), Modifier.weight(1f))
-                    }
-                }
                 if (summary.boolean("tun")) banner("配置里开启了 TUN，会和透明代理冲突，建议在向导里执行本机优化关闭它。", BannerKind.Error, "tun")
             }
-            group("订阅", "providers") {
-                for (provider in state.providers) {
-                    val url = provider.fields.firstOrNull { it.id == "url" }?.let { fieldText(it.value) }.orEmpty()
-                    ArrowRow(provider.name, url.ifEmpty { provider.type }, enabled = provider.editable) { item = "provider" to provider }
+            group("代理与分流", "lists") {
+                Caption("流量的去向：规则决定走哪个策略组，策略组从订阅和单个节点里挑出实际使用的节点。")
+                val nodes = state.nodes.list.count { it.type != "dns" }
+                val counts = mapOf(
+                    "providers" to "${state.providers.size} 个",
+                    "nodes" to "$nodes 个",
+                    "groups" to "${state.groups.list.size} 个",
+                    "rules" to "${state.ruleRows.size} 条" + if (state.rulesDirty) " · 已修改" else "",
+                    "ruleProviders" to "${state.ruleProviders.size} 个",
+                )
+                for ((id, title, summary) in PROFILE_LISTS.map { Triple(it.first, it.second, it.third) }) {
+                    ArrowRow(title, summary, value = counts[id]) { opened = id }
                 }
-                ArrowRow("添加订阅", "填入机场提供的订阅链接", startIcon = MiuixIcons.Regular.Add) { item = "provider" to null }
-            }
-            group("单个节点", "nodes") {
-                NodeRows(onOpen = { node = NodeTarget(it) }, onPaste = { paste = true })
-            }
-            group("策略组", "groups") {
-                GroupRows(onOpen = { groupTarget = GroupTarget(it) })
-            }
-            group("规则集", "ruleProviders") {
-                for (ruleSet in state.ruleProviders) {
-                    val behavior = ruleSet.fields.firstOrNull { it.id == "behavior" }
-                    ArrowRow(ruleSet.name, behavior?.let { fieldDisplay(it, it.value) }, enabled = ruleSet.editable) { item = "ruleProvider" to ruleSet }
-                }
-                ArrowRow("添加规则集", "从网上引用一组域名或 IP 规则", startIcon = MiuixIcons.Regular.Add) { item = "ruleProvider" to null }
             }
             group("高级设置", "sections") {
                 for (s in state.sections) {
@@ -344,6 +391,7 @@ fun ProfilePage(onBack: () -> Unit) {
     NodeSheet(node, onDismiss = { node = null })
     NodePasteSheet(paste, onDismiss = { paste = false })
     GroupSheet(groupTarget, onDismiss = { groupTarget = null })
+    RuleSheet(ruleTarget) { ruleTarget = it }
     SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
 }
 
@@ -492,16 +540,5 @@ private fun ItemSheet(target: Pair<String, ConfigItem?>?, onDismiss: () -> Unit)
         confirmDelete = false
         existing?.let { state.collection("$kind.delete", it.name) }
         onDismiss()
-    }
-}
-
-@Composable
-private fun ProfileStat(label: String, value: String, modifier: Modifier) {
-    top.yukonga.miuix.kmp.basic.Card(modifier, insideMargin = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp)) {
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(value.ifEmpty { "—" }, fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                color = MiuixTheme.colorScheme.onSurface)
-            Text(label, fontSize = 12.sp, color = Tone.muted)
-        }
     }
 }

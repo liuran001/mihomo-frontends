@@ -804,7 +804,8 @@
       else if (Array.isArray(g.use) && g.use.length) parts.push('订阅 ' + g.use.join('、'));
       if (g['include-all-proxies'] === true) parts.push('全部单个节点');
     }
-    if (g.filter) parts.push('筛选 ' + g.filter);
+    // 筛选正则常常很长，摘要里只留开头
+    if (g.filter) parts.push('筛选 ' + (String(g.filter).length > 24 ? String(g.filter).slice(0, 24) + '…' : g.filter));
     return parts.join(' · ');
   }
 

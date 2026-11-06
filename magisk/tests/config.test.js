@@ -609,3 +609,23 @@ test('group.add / set / delete / move keep references and anchors consistent', (
   assert.deepEqual(built.group.proxies, ['a']);
   assert.equal(built.group['prefer-asn'], undefined);
 });
+
+test('rules.set reorders, edits and adds rules while keeping comments', () => {
+  const content = 'rules:\n  # 广告\n  - DOMAIN-SUFFIX,ad.test,REJECT\n  - DOMAIN,a.test,DIRECT # 行尾\n  - MATCH,DIRECT\n';
+  const schema = JSON.parse(JSON.stringify(C.schema(content).rules));
+  assert.deepEqual(schema.list.length, 3);
+  assert.ok(schema.policies.includes('DIRECT'));
+  const out = C.patch(content, [{ op: 'rules.set', items: [{ k: 1, v: 'DOMAIN,b.test,DIRECT' }, { v: 'GEOIP,CN,DIRECT,no-resolve' }, { k: 0 }, { k: 2 }] }]).content;
+  assert.deepEqual(plain(out).rules, ['DOMAIN,b.test,DIRECT', 'GEOIP,CN,DIRECT,no-resolve', 'DOMAIN-SUFFIX,ad.test,REJECT', 'MATCH,DIRECT']);
+  assert.match(out, /# 广告\n  - DOMAIN-SUFFIX,ad.test,REJECT/);
+  assert.match(out, /b\.test,DIRECT # 行尾/);
+  assert.equal(C.patch(content, [{ op: 'rules.set', items: [{ k: 0 }, { k: 1 }, { k: 2 }] }]).content, content);
+  assert.deepEqual(plain(C.patch(content, [{ op: 'rules.set', items: [{ k: 2 }] }]).content).rules, ['MATCH,DIRECT']);
+  const bad = (items) => () => C.patch(content, [{ op: 'rules.set', items }]);
+  assert.throws(bad([{ k: 0 }, { k: 0 }]), /不一致/);
+  assert.throws(bad([{ k: 7 }]), /不一致/);
+  assert.throws(bad([{ v: 'MATCH' }]), /格式无效/);
+  assert.throws(bad([{ v: 'DOMAIN,a\nb,DIRECT' }]), /格式无效/);
+  assert.deepEqual(plain(C.patch('proxies: []\n', [{ op: 'rules.set', items: [{ v: 'MATCH,DIRECT' }] }]).content).rules, ['MATCH,DIRECT']);
+  assert.match(C.schema('rules: {a: 1}\n').rules.unsupported, /不是列表/);
+});

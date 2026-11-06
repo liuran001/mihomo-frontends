@@ -378,7 +378,7 @@
       fields: RULE_PROVIDER_FIELDS.map((field) => ({ ...fieldState(field, isObject(item) ? item : {}, null, extra), id: field.key.join('.'), path: field.key })),
     }));
     return { ok: true, sections, providers, ruleProviders, ...tailscaleSchema(data), providerFields: PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
-      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), nodes: nodeSchema(doc, data), groups: groupSchema(doc, data), summary: summarize(doc, data) };
+      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), nodes: nodeSchema(doc, data), groups: groupSchema(doc, data), rules: ruleSchema(data), summary: summarize(doc, data) };
   }
 
   function tailscaleSchema(data) {
@@ -445,6 +445,7 @@
   //      {op:'ruleProvider.set|add|delete', ...}
   //      {op:'proxy.add', nodes:[...], groups:[...]} / {op:'proxy.set', name, data, groups} / {op:'proxy.delete', name}
   //      {op:'group.add', data} / {op:'group.set', name, data} / {op:'group.delete', name} / {op:'group.move', name, to}
+  //      {op:'rules.set', items:[{k}|{k,v}|{v}]}（k 为原下标）
 
   function patch(content, ops) {
     if (!Array.isArray(ops) || !ops.length) throw new Error('没有要保存的修改');
@@ -458,6 +459,7 @@
       else if (/^tailscale\.(set|add|delete|webui|serve)$/.test(op.op)) applyTailscale(doc, data, op);
       else if (/^proxy\.(set|add|delete)$/.test(op.op)) applyProxy(doc, data, op);
       else if (/^group\.(set|add|delete|move)$/.test(op.op)) applyGroup(doc, data, op);
+      else if (op.op === 'rules.set') applyRules(doc, data, op);
       else throw new Error('不支持的修改：' + op.op);
     }
     const output = dump(doc);
@@ -1225,6 +1227,63 @@
     const result = linkLib().buildGroup(isObject(base) ? base : {}, isObject(values) ? values : {});
     if (result.error) throw new Error(result.error);
     return { ok: true, group: result.group, summary: linkLib().groupSummary(result.group) };
+  }
+
+  // ---------- 规则 ----------
+  // 与 LuCI forms.uc 的 rules.set 一致：items 为 [{k}|{k,v}|{v}]，k 为原下标（保留该条的注释），v 为新文本
+
+  const MAX_RULES = 20000;
+
+  function ruleSchema(data) {
+    const rules = data.rules;
+    if (rules != null && !Array.isArray(rules)) return { unsupported: 'rules 不是列表，请在配置原文中编辑' };
+    if ((rules || []).some((rule) => typeof rule !== 'string')) return { unsupported: 'rules 里有不是文字的条目，请在配置原文中编辑' };
+    return { list: rules || [], policies: policies(data), ruleSets: Object.keys(isObject(data['rule-providers']) ? data['rule-providers'] : {}) };
+  }
+
+  function ruleText(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!text || text.length > 4096 || !text.includes(',') || /[\x00-\x1f\x7f]/.test(text)) return null;
+    return text;
+  }
+
+  function applyRules(doc, data, op) {
+    const schema = ruleSchema(data);
+    if (schema.unsupported) throw new Error(schema.unsupported);
+    if (!Array.isArray(op.items) || op.items.length > MAX_RULES) throw new Error('规则列表无效');
+    const seq = doc.get('rules', true);
+    const current = Y.isSeq(seq) ? seq.items : [];
+    const used = new Set();
+    const items = op.items.map((item) => {
+      if (!isObject(item) || (item.k == null && item.v == null)) throw new Error('规则列表无效');
+      const k = item.k;
+      if (k != null && (!Number.isInteger(k) || k < 0 || k >= current.length || used.has(k))) throw new Error('规则列表与当前配置不一致，请重新读取');
+      if (k != null) used.add(k);
+      if (item.v == null) return current[k];
+      const text = ruleText(item.v);
+      if (text === null) throw new Error('规则格式无效：' + String(item.v));
+      if (k == null) return doc.createNode(text);
+      // 改原有的一条：只换文字，保留它的注释
+      const node = current[k];
+      if (Y.isScalar(node)) {
+        if (node.value !== text) node.value = text;
+        return node;
+      }
+      return doc.createNode(text);
+    });
+    if (!Y.isSeq(seq)) {
+      if (!items.length) return;
+      doc.set('rules', doc.createNode([]));
+    }
+    const target = doc.get('rules', true);
+    if (items.length === current.length && items.every((item, index) => item === current[index])) return;
+    // 第一条规则上方的注释记在列表上，随原来的第一条一起移动
+    if (target.commentBefore && current.length && items[0] !== current[0] && Y.isNode(current[0])) {
+      current[0].commentBefore = current[0].commentBefore ? target.commentBefore + String.fromCharCode(10) + current[0].commentBefore : target.commentBefore;
+      target.commentBefore = undefined;
+    }
+    target.items = items;
   }
 
   // ---------- 分析 ----------
