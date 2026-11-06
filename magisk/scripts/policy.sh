@@ -94,7 +94,10 @@ case "$1" in
     while :; do
       (exec 8>&-; sh "$SCRIPTS/policy.sh" tick)
       module_enabled || exit 0
-      sleep "${MIHOMO_POLICY_INTERVAL:-5}"
+      # 巡检只用来发现内核意外退出、模块被禁用和 Wi-Fi 切换。没开 Wi-Fi 条件时 30 秒一次即可；
+      # 开了时 10 秒内跟上网络切换（每次要向系统查询一次 Wi-Fi 状态，不宜更频繁）。sleep 不会唤醒休眠中的设备。
+      if grep -Eq '^wifi_mode=(only|exclude)$' "$SETTINGS" 2>/dev/null; then policy_interval=10; else policy_interval=30; fi
+      sleep "${MIHOMO_POLICY_INTERVAL:-$policy_interval}"
     done
     ;;
   *) fail '用法: policy.sh get|ssid|set|tick|watch' ;;

@@ -144,11 +144,10 @@ atomic_text() {
 }
 
 close_inherited_fds() {
-  for descriptor_path in /proc/self/fd/*; do
-    descriptor=${descriptor_path##*/}
-    case "$descriptor" in 0|1|2|''|*[!0-9]*) continue ;; esac
-    # mksh、dash 只认一位数的描述符，exec 12>&- 会被当成命令执行并让整个子 shell 退出；先试一次，不支持就跳过
-    case "$descriptor" in ?) ;; *) (eval "exec $descriptor>&-") 2>/dev/null || continue ;; esac
+  # 只关 3–9：后台锁（8、9）和调用方可能留下的低位描述符。10 以上是 shell 自己的（busybox ash 把被重定向的
+  # 0–2 备份在这里），关掉后在 Android 上实测会让后台子 shell 空转写 /dev/null、长期占满一个 CPU；
+  # mksh、dash 也不支持两位数描述符。
+  for descriptor in 3 4 5 6 7 8 9; do
     eval "exec $descriptor>&-"
   done
 }
