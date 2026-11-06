@@ -95,6 +95,7 @@ function mockBackend() {
       case 'nodeParse': result = window.mihomoConfig.nodeParse(payload.text, payload.taken); break;
       case 'nodeForm': result = window.mihomoConfig.nodeForm(payload.type, payload.node); break;
       case 'nodeBuild': result = window.mihomoConfig.nodeBuild(payload.base, payload.type, payload.values); break;
+      case 'groupBuild': result = window.mihomoConfig.groupBuild(payload.base, payload.values); break;
       case 'configPatch': result = window.mihomoConfig.patch(payload.content, payload.ops); break;
       case 'configOptimize': result = window.mihomoConfig.optimize(payload.content, payload.host || {}, { skip: payload.skip || [] }); break;
       case 'tailscaleRead':

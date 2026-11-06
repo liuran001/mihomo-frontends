@@ -378,7 +378,7 @@
       fields: RULE_PROVIDER_FIELDS.map((field) => ({ ...fieldState(field, isObject(item) ? item : {}, null, extra), id: field.key.join('.'), path: field.key })),
     }));
     return { ok: true, sections, providers, ruleProviders, ...tailscaleSchema(data), providerFields: PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)),
-      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), nodes: nodeSchema(doc, data), summary: summarize(doc, data) };
+      ruleProviderFields: RULE_PROVIDER_FIELDS.map((field) => fieldState(field, {}, null, extra)), nodes: nodeSchema(doc, data), groups: groupSchema(doc, data), summary: summarize(doc, data) };
   }
 
   function tailscaleSchema(data) {
@@ -444,6 +444,7 @@
   //      {op:'provider.set', name, values:{'url':..}} / {op:'provider.add', name, values} / {op:'provider.delete', name}
   //      {op:'ruleProvider.set|add|delete', ...}
   //      {op:'proxy.add', nodes:[...], groups:[...]} / {op:'proxy.set', name, data, groups} / {op:'proxy.delete', name}
+  //      {op:'group.add', data} / {op:'group.set', name, data} / {op:'group.delete', name} / {op:'group.move', name, to}
 
   function patch(content, ops) {
     if (!Array.isArray(ops) || !ops.length) throw new Error('没有要保存的修改');
@@ -456,6 +457,7 @@
       else if (/^(provider|ruleProvider)\.(set|add|delete)$/.test(op.op)) applyCollection(doc, data, op);
       else if (/^tailscale\.(set|add|delete|webui|serve)$/.test(op.op)) applyTailscale(doc, data, op);
       else if (/^proxy\.(set|add|delete)$/.test(op.op)) applyProxy(doc, data, op);
+      else if (/^group\.(set|add|delete|move)$/.test(op.op)) applyGroup(doc, data, op);
       else throw new Error('不支持的修改：' + op.op);
     }
     const output = dump(doc);
@@ -999,17 +1001,7 @@
       if (current.type === 'tailscale' || current.type === 'dns') throw new Error(nodeLock(doc, current, index));
       const refs = policyRefs(data, op.name);
       if (refs.length) throw new Error('节点「' + op.name + '」正在被使用：' + refs.join('、') + '。请先改成别的出站');
-      const groups = nodeGroups(doc, data);
-      for (const seq of groupSeqs(doc)) {
-        const left = seq.items.filter((item) => !scalarIs(item, op.name));
-        if (left.length === seq.items.length) continue;
-        if (!left.length) {
-          // 只有自己时：组里还有订阅等其他来源才能删掉整个列表
-          const owners = groups.filter((group) => { const map = seqItem(doc, 'proxy-groups', group.index); return Y.isMap(map) && map.get('proxies', true) === seq; });
-          if (!owners.length || owners.some((group) => !group.others)) throw new Error('有策略组只包含「' + op.name + '」，请先给它换一个出站');
-          for (const group of owners) seqItem(doc, 'proxy-groups', group.index).delete('proxies');
-        } else seq.items = left;
-      }
+      dropMember(doc, data, op.name);
       doc.get('proxies', true).delete(index);
       return;
     }
@@ -1041,12 +1033,7 @@
   // 某类型的表单：字段说明 + 当前值（输入框文字；布尔为 true/false）
   function nodeForm(type, node) {
     const lib = linkLib();
-    const option = (entry) => (Array.isArray(entry) ? { id: String(entry[0]), title: String(entry[1]) } : { id: String(entry), title: entry === '' ? '默认' : String(entry) });
-    const fields = lib.fields(type).map((field) => ({
-      key: field.key, label: field.label, kind: field.kind, required: !!field.required, adv: !!field.adv,
-      help: field.help || '', placeholder: field.placeholder || '', options: (field.options || []).map(option),
-      when: field.when ? { key: field.when.key, in: field.when.in.map((value) => (value === true ? 'true' : String(value))) } : null,
-    }));
+    const fields = lib.fields(type).map(formField);
     const values = lib.formValues(isObject(node) ? node : {}, type);
     const known = new Set(lib.fields(type).map((field) => field.key.split('.')[0]));
     const extra = isObject(node) ? Object.keys(node).filter((key) => !known.has(key) && key !== 'type') : [];
@@ -1057,6 +1044,187 @@
     const result = linkLib().buildNode(isObject(base) ? base : {}, String(type || ''), isObject(values) ? values : {});
     if (result.error) throw new Error(result.error);
     return { ok: true, node: result.node, summary: linkLib().summary(result.node) };
+  }
+
+  // ---------- 策略组 ----------
+  // 与 LuCI forms.uc 的 group.add / group.set / group.delete / group.move 语义一致：
+  // 改名时同步规则、其他组的成员与前置代理等引用；删除前检查引用与锚点继承；经锚点继承的字段不能在表单里删除。
+
+  // 与 shared/proxylink.js 的 GROUP_TYPES 一致；relay 已被内核移除
+  const GROUP_TYPES = ['select', 'smart', 'url-test', 'fallback', 'load-balance'];
+  const MAX_GROUPS = 512;
+
+  function groupList(data) {
+    return Array.isArray(data['proxy-groups']) ? data['proxy-groups'] : [];
+  }
+
+  function groupIndex(data, name) {
+    return groupList(data).findIndex((item) => isObject(item) && item.name === name);
+  }
+
+  // 通过 <<: *锚点 继承第 index 个组的其他组
+  function groupHeirs(doc, data, index) {
+    const map = seqItem(doc, 'proxy-groups', index);
+    const seq = doc.get('proxy-groups', true);
+    const out = [];
+    (Y.isSeq(seq) ? seq.items : []).forEach((item, i) => {
+      if (i !== index && mergeSources(doc, resolved(doc, item)).includes(map)) out.push(String((groupList(data)[i] || {}).name || ''));
+    });
+    return out;
+  }
+
+  // 继承自锚点（而非组里直接写）的字段
+  function groupInherited(map, value) {
+    return hasMerge(map) ? Object.keys(value).filter((key) => !ownKey(map, key)) : [];
+  }
+
+  function groupLock(doc, item, index) {
+    if (!Y.isMap(seqItem(doc, 'proxy-groups', index))) return '格式无法识别，请在配置原文中编辑';
+    if (!GROUP_TYPES.includes(item.type)) return '表单不支持 ' + (item.type || '?') + ' 类型，请在配置原文中编辑';
+    return '';
+  }
+
+  // 表单字段说明（节点与策略组共用）
+  function formField(field) {
+    const option = (entry) => (Array.isArray(entry) ? { id: String(entry[0]), title: String(entry[1]) } : { id: String(entry), title: entry === '' ? '默认' : String(entry) });
+    return {
+      key: field.key, label: field.label, kind: field.kind, required: !!field.required, adv: !!field.adv,
+      help: field.help || '', placeholder: field.placeholder || '', options: (field.options || []).map(option),
+      when: field.when ? { key: field.when.key, in: field.when.in.map((value) => (value === true ? 'true' : String(value))) } : null,
+    };
+  }
+
+  function groupSchema(doc, data) {
+    if (data['proxy-groups'] != null && !Array.isArray(data['proxy-groups'])) return { unsupported: 'proxy-groups 不是列表，请在配置原文中编辑' };
+    const lib = root.mihomoProxyLink;
+    const all = groupList(data);
+    const list = all.map((item, index) => {
+      const value = isObject(item) ? item : {};
+      const name = String(value.name || '');
+      return {
+        name, type: String(value.type || ''), lock: groupLock(doc, value, index),
+        summary: lib ? lib.groupSummary(value) : String(value.type || ''),
+        data: value, values: lib ? lib.groupValues(value) : {},
+        inherited: groupInherited(seqItem(doc, 'proxy-groups', index), value),
+        heirs: groupHeirs(doc, data, index), refs: policyRefs(data, name),
+        memberOf: all.filter((group) => isObject(group) && Array.isArray(group.proxies) && group.proxies.includes(name)).map((group) => String(group.name || '')),
+      };
+    });
+    const proxies = (Array.isArray(data.proxies) ? data.proxies : []).filter((item) => isObject(item) && item.type !== 'dns')
+      .map((item) => String(item.name || '')).filter(Boolean);
+    return {
+      list, proxies, builtin: BUILTIN_POLICIES.slice(),
+      providers: Object.keys(isObject(data['proxy-providers']) ? data['proxy-providers'] : {}),
+      types: lib ? lib.GROUP_TYPES.map((type) => ({ id: type.type, title: type.label, help: type.help })) : [],
+      fields: lib ? lib.GROUP_FIELDS.map(formField) : [],
+      defaults: lib ? lib.groupValues({}) : {},
+    };
+  }
+
+  // 校验并整理一个策略组；self 为修改前的名称（新增时为 null）
+  function checkGroupData(data, value, self) {
+    if (!isObject(value)) throw new Error('策略组无效');
+    if (Object.keys(value).some((key) => key === '<<')) throw new Error('不支持合并键（<<），请在配置原文中编辑');
+    const group = nodeValue(value, 0);
+    if (group === undefined) throw new Error('策略组包含无效的字段');
+    const error = linkLib().checkGroup(group);
+    if (error) throw new Error(error);
+    if (!GROUP_TYPES.includes(group.type)) throw new Error('不支持的类型：' + group.type);
+    if (group.name !== self && takenNames(data).includes(group.name)) throw new Error('名称已被占用：' + group.name);
+    const known = policies(data);
+    const members = group.proxies == null ? [] : group.proxies;
+    if (!Array.isArray(members)) throw new Error('成员必须是列表');
+    for (const member of members) {
+      if (member === self) throw new Error('成员里不能包含自己');
+      if (typeof member !== 'string' || !known.includes(member)) throw new Error('成员不存在：' + member);
+    }
+    const providers = Object.keys(isObject(data['proxy-providers']) ? data['proxy-providers'] : {});
+    const use = group.use == null ? [] : group.use;
+    if (!Array.isArray(use)) throw new Error('订阅必须是列表');
+    for (const name of use) if (typeof name !== 'string' || !providers.includes(name)) throw new Error('订阅不存在：' + name);
+    const out = { name: group.name, type: group.type };
+    for (const [key, entry] of Object.entries(group)) if (key !== 'name' && key !== 'type') out[key] = entry;
+    return out;
+  }
+
+  // 从所有策略组的成员列表里移除 name；组里只剩它且没有订阅等其他来源时拒绝
+  function dropMember(doc, data, name) {
+    const groups = nodeGroups(doc, data);
+    for (const seq of groupSeqs(doc)) {
+      const left = seq.items.filter((item) => !scalarIs(item, name));
+      if (left.length === seq.items.length) continue;
+      if (!left.length) {
+        const owners = groups.filter((group) => { const map = seqItem(doc, 'proxy-groups', group.index); return Y.isMap(map) && map.get('proxies', true) === seq; });
+        if (!owners.length || owners.some((group) => !group.others)) throw new Error('有策略组只包含「' + name + '」，请先给它换一个出站');
+        for (const group of owners) seqItem(doc, 'proxy-groups', group.index).delete('proxies');
+      } else seq.items = left;
+    }
+  }
+
+  // 用到锚点的组必须排在定义锚点的组后面；order 为移动后的映射顺序（移动前解析，移动后别名可能已无法解析）
+  function checkAnchorOrder(doc, items) {
+    items.forEach((map, i) => {
+      for (const source of mergeSources(doc, map)) {
+        if (items.indexOf(source) > i) throw new Error('策略组「' + String(map.get('name')) + '」继承了排在它后面的组，锚点必须先定义，不能这样排序');
+      }
+    });
+  }
+
+  function applyGroup(doc, data, op) {
+    const action = op.op.split('.')[1];
+    if (data['proxy-groups'] != null && !Array.isArray(data['proxy-groups'])) throw new Error('proxy-groups 不是列表，请在配置原文中编辑');
+    if (action === 'add') {
+      const group = checkGroupData(data, op.data, null);
+      if (groupList(data).length >= MAX_GROUPS) throw new Error('策略组过多');
+      if (!Y.isSeq(doc.get('proxy-groups', true))) doc.set('proxy-groups', doc.createNode([]));
+      const seq = doc.get('proxy-groups', true);
+      seq.flow = false;
+      seq.add(doc.createNode(group));
+      return;
+    }
+    const index = groupIndex(data, op.name);
+    if (typeof op.name !== 'string' || index < 0) throw new Error('策略组不存在：' + (op.name || ''));
+    const current = data['proxy-groups'][index];
+    const map = seqItem(doc, 'proxy-groups', index);
+    if (!Y.isMap(map)) throw new Error(groupLock(doc, current, index));
+    if (action === 'move') {
+      const seq = doc.get('proxy-groups', true);
+      if (!Number.isInteger(op.to) || op.to < 0 || op.to >= seq.items.length) throw new Error('位置无效');
+      const order = seq.items.map((item) => resolved(doc, item));
+      order.splice(op.to, 0, order.splice(index, 1)[0]);
+      checkAnchorOrder(doc, order);
+      const [item] = seq.items.splice(index, 1);
+      seq.items.splice(op.to, 0, item);
+      return;
+    }
+    if (action === 'delete') {
+      const heirs = groupHeirs(doc, data, index);
+      if (heirs.length) throw new Error('策略组「' + op.name + '」被 ' + heirs.join('、') + ' 通过锚点继承，不能删除，请在配置原文中修改');
+      const refs = policyRefs(data, op.name);
+      if (refs.length) throw new Error('策略组「' + op.name + '」正在被使用：' + refs.join('、') + '。请先改成别的出站');
+      dropMember(doc, data, op.name);
+      doc.get('proxy-groups', true).delete(index);
+      return;
+    }
+    if (action !== 'set') throw new Error('不支持的修改：' + op.op);
+    const lock = groupLock(doc, current, index);
+    if (lock) throw new Error(lock);
+    const group = checkGroupData(data, op.data, op.name);
+    const inherited = groupInherited(map, current);
+    for (const key of Object.keys(current)) {
+      if (key in group) continue;
+      if (inherited.includes(key)) throw new Error('「' + key + '」继承自锚点，不能在这里删除，请在配置原文中修改');
+      map.delete(key);
+    }
+    // 只改有变化的字段，保留其余字段的注释与格式
+    for (const [key, value] of Object.entries(group)) if (!sameValue(current[key], value)) map.set(key, doc.createNode(value));
+    if (group.name !== op.name) renameRefs(doc, op.name, group.name);
+  }
+
+  function groupBuild(base, values) {
+    const result = linkLib().buildGroup(isObject(base) ? base : {}, isObject(values) ? values : {});
+    if (result.error) throw new Error(result.error);
+    return { ok: true, group: result.group, summary: linkLib().groupSummary(result.group) };
   }
 
   // ---------- 分析 ----------
@@ -1400,5 +1568,5 @@
   }
 
   // 订阅转配置时，把多个订阅写进内置模板之后统一走 optimize。
-  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, tailscale, nodes, nodeParse, nodeForm, nodeBuild, patch, analyze, optimize, check });
+  root.mihomoConfig = Object.freeze({ parse: (content) => { parse(content); return { ok: true }; }, lint, schema, tailscale, nodes, nodeParse, nodeForm, nodeBuild, groupBuild, patch, analyze, optimize, check });
 })(typeof window !== 'undefined' ? window : globalThis);

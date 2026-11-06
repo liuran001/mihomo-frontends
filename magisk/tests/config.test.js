@@ -528,3 +528,84 @@ test('node links parse and forms round-trip through the engine', () => {
   assert.deepEqual([built.node.port, built.node.foo, built.node['grpc-opts']['grpc-service-name']], [2, 1, 'svc']);
   assert.throws(() => C.nodeBuild({}, 'vless', { name: 'a', server: 's', port: '1' }), /UUID/);
 });
+
+const groupConfig = `proxies:
+  - {name: a, type: socks5, server: 1.1.1.1, port: 1}
+x-base: &base
+  type: smart
+  use: [机场]
+proxy-groups:
+  # 总开关
+  - name: 节点选择
+    type: select
+    proxies: [香港, a, DIRECT]
+  - name: 香港
+    <<: *base
+    filter: 港
+  - &auto {name: 自动, type: url-test, use: [机场]}
+  - {<<: *auto, name: 派生}
+proxy-providers:
+  机场: {type: http, url: "https://example.com/s", path: ./p.yaml}
+rules:
+  - DOMAIN,a.test,香港
+  - MATCH,节点选择
+`;
+
+test('group schema exposes form data, inherited keys and usage', () => {
+  const J = (value) => JSON.parse(JSON.stringify(value));
+  const schema = J(C.schema(groupConfig).groups);
+  const hk = schema.list[1];
+  assert.deepEqual([hk.type, hk.inherited.sort(), hk.memberOf, hk.refs], ['smart', ['type', 'use'], ['节点选择'], ['规则第 1 条']]);
+  assert.deepEqual([schema.list[2].heirs, schema.providers, schema.proxies], [['派生'], ['机场'], ['a']]);
+  assert.equal(hk.values.lazy, true);
+  assert.ok(schema.fields.some((field) => field.key === 'policy-priority'));
+  assert.deepEqual(schema.types.map((type) => type.id), ['select', 'smart', 'url-test', 'fallback', 'load-balance']);
+});
+
+test('group.add / set / delete / move keep references and anchors consistent', () => {
+  const J = (value) => JSON.parse(JSON.stringify(value));
+  const JP = { name: '日本', type: 'smart', use: ['机场'], 'prefer-asn': true, 'policy-priority': '(?i)iplc:1.5' };
+  let data = plain(C.patch(groupConfig, [{ op: 'group.add', data: JP }]).content);
+  assert.deepEqual(data['proxy-groups'][4], JP);
+  const add = (group) => () => C.patch(groupConfig, [{ op: 'group.add', data: group }]);
+  assert.throws(add({ ...JP, name: '香港' }), /已被占用/);
+  assert.throws(add({ ...JP, name: 'DIRECT' }), /已被占用/);
+  assert.throws(add({ ...JP, proxies: ['不存在'] }), /成员不存在/);
+  assert.throws(add({ ...JP, proxies: ['日本'] }), /自己/);
+  assert.throws(add({ ...JP, use: ['无'] }), /订阅不存在/);
+  assert.throws(add({ name: '空', type: 'select' }), /至少/);
+  assert.throws(add({ ...JP, type: 'relay' }), /类型/);
+  assert.throws(add({ ...JP, '<<': { x: 1 } }), /合并键/);
+
+  // 改名同步规则与成员；锚点、注释保留；未改动时文件不变
+  const hk = J(C.schema(groupConfig).groups.list[1].data);
+  let content = C.patch(groupConfig, [{ op: 'group.set', name: '香港', data: { ...hk, name: '港区', 'prefer-udp': true } }]).content;
+  data = plain(content);
+  assert.deepEqual([data['proxy-groups'][1].name, data['proxy-groups'][1]['prefer-udp'], data.rules[0], data['proxy-groups'][0].proxies[0]],
+    ['港区', true, 'DOMAIN,a.test,港区', '港区']);
+  assert.match(content, /<<: \*base/);
+  assert.match(content, /# 总开关/);
+  assert.equal(C.patch(groupConfig, [{ op: 'group.set', name: '香港', data: hk }]).content, groupConfig);
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.set', name: '香港', data: { name: '香港', type: 'select', proxies: ['a'] } }]), /继承自锚点/);
+  data = plain(C.patch(groupConfig, [{ op: 'group.set', name: '香港', data: { ...hk, type: 'url-test' } }]).content);
+  assert.equal(data['proxy-groups'][1].type, 'url-test');
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.set', name: '香港', data: { ...hk, name: '自动' } }]), /已被占用/);
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.set', name: '无', data: hk }]), /不存在/);
+
+  // 删除
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.delete', name: '香港' }]), /规则第 1 条/);
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.delete', name: '自动' }]), /锚点/);
+  const free = groupConfig.replace('  - DOMAIN,a.test,香港\n', '');
+  data = plain(C.patch(free, [{ op: 'group.delete', name: '香港' }]).content);
+  assert.deepEqual([data['proxy-groups'].map((group) => group.name), data['proxy-groups'][0].proxies], [['节点选择', '自动', '派生'], ['a', 'DIRECT']]);
+
+  // 排序：锚点必须在使用者之前
+  data = plain(C.patch(groupConfig, [{ op: 'group.move', name: '香港', to: 0 }]).content);
+  assert.deepEqual(data['proxy-groups'].map((group) => group.name), ['香港', '节点选择', '自动', '派生']);
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.move', name: '派生', to: 0 }]), /锚点必须先定义/);
+  assert.throws(() => C.patch(groupConfig, [{ op: 'group.move', name: '香港', to: 9 }]), /位置无效/);
+
+  const built = J(C.groupBuild(hk, { ...J(C.schema(groupConfig).groups.list[1].values), type: 'select', proxies: ['a'] }));
+  assert.deepEqual(built.group.proxies, ['a']);
+  assert.equal(built.group['prefer-asn'], undefined);
+});

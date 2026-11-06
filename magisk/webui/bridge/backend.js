@@ -904,6 +904,10 @@
     if (payload.base !== undefined) assertObject(payload.base);
     assertObject(payload.values);
   }, (payload) => engine().nodeBuild(payload.base, payload.type, payload.values));
+  register('groupBuild', ['base', 'values'], (payload) => {
+    if (payload.base !== undefined) assertObject(payload.base);
+    assertObject(payload.values);
+  }, (payload) => engine().groupBuild(payload.base, payload.values));
   register('yamlLint', ['content'], (payload) => text(payload.content, 'content'), (payload) => engine().lint(payload.content));
   register('configAnalyze', ['content'], (payload) => text(payload.content, 'content'), (payload) => engine().analyze(payload.content));
   register('configPatch', ['content', 'ops'], (payload) => {

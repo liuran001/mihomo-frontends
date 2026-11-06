@@ -112,6 +112,9 @@ internal object ProfileState {
     /** 单个节点：显示的是暂存修改后的结果；撤销时回到 baseNodes。 */
     var nodes by mutableStateOf(NodeView())
     private var baseNodes = NodeView()
+    /** 策略组：同样显示暂存修改后的结果。 */
+    var groups by mutableStateOf(GroupView())
+    private var baseGroups = GroupView()
     /** 待保存的修改：字段 id » 新值，以及集合操作。 */
     var edits by mutableStateOf<Map<String, JsonElement>>(emptyMap())
     var collectionOps by mutableStateOf<List<JsonObject>>(emptyList())
@@ -159,13 +162,17 @@ internal object ProfileState {
         summary = schema["summary"] as? JsonObject
         nodes = nodeView(schema["nodes"])
         baseNodes = nodes
+        groups = groupView(schema["groups"])
+        baseGroups = groups
     }
 
-    /** 暂存一项节点修改：先在本地连同已暂存的修改试算一遍，失败时抛出原因，成功后刷新节点列表。 */
+    /** 暂存一项节点或策略组修改：先在本地连同已暂存的修改试算一遍，失败时抛出原因，成功后刷新节点列表。 */
     suspend fun stage(op: JsonObject) {
         val content = source ?: error("还没有配置")
         val patched = request("configPatch", JsonObject(mapOf("content" to JsonPrimitive(content), "ops" to JsonArray(ops() + op)))).string("content")
-        nodes = nodeView(request("configSchema", json("content" to patched))["nodes"])
+        val schema = request("configSchema", json("content" to patched))
+        nodes = nodeView(schema["nodes"])
+        groups = groupView(schema["groups"])
         collectionOps = collectionOps + op
         notice = ""
     }
@@ -186,6 +193,7 @@ internal object ProfileState {
         edits = emptyMap()
         collectionOps = emptyList()
         nodes = baseNodes
+        groups = baseGroups
         error = ""
     }
 
@@ -246,6 +254,7 @@ fun ProfilePage(onBack: () -> Unit) {
     var editing by remember { mutableStateOf<ConfigField?>(null) }
     var item by remember { mutableStateOf<Pair<String, ConfigItem?>?>(null) }
     var node by remember { mutableStateOf<NodeTarget?>(null) }
+    var groupTarget by remember { mutableStateOf<GroupTarget?>(null) }
     var paste by remember { mutableStateOf(false) }
     var confirmSave by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { state.load() }
@@ -295,6 +304,9 @@ fun ProfilePage(onBack: () -> Unit) {
             group("单个节点", "nodes") {
                 NodeRows(onOpen = { node = NodeTarget(it) }, onPaste = { paste = true })
             }
+            group("策略组", "groups") {
+                GroupRows(onOpen = { groupTarget = GroupTarget(it) })
+            }
             group("规则集", "ruleProviders") {
                 for (ruleSet in state.ruleProviders) {
                     val behavior = ruleSet.fields.firstOrNull { it.id == "behavior" }
@@ -331,6 +343,7 @@ fun ProfilePage(onBack: () -> Unit) {
     ItemSheet(item, onDismiss = { item = null })
     NodeSheet(node, onDismiss = { node = null })
     NodePasteSheet(paste, onDismiss = { paste = false })
+    GroupSheet(groupTarget, onDismiss = { groupTarget = null })
     SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
 }
 

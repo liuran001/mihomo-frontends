@@ -75,7 +75,7 @@ internal fun nodeView(value: JsonElement?): NodeView {
     )
 }
 
-private fun JsonObject.nodeField(): NodeField {
+internal fun JsonObject.nodeField(): NodeField {
     val condition = this["when"] as? JsonObject
     return NodeField(string("key"), string("label"), string("kind"), boolean("required"), boolean("adv"), string("help"),
         string("placeholder"), objects("options").map { it.string("id") to it.string("title") },
@@ -83,7 +83,7 @@ private fun JsonObject.nodeField(): NodeField {
 }
 
 /** 与 proxylink.js 的 visible() 一致：未填或关闭视为空值，空值等同于 TCP / 默认。 */
-private fun visible(field: NodeField, values: Map<String, JsonElement>): Boolean {
+internal fun visible(field: NodeField, values: Map<String, JsonElement>): Boolean {
     val key = field.whenKey ?: return true
     val raw = (values[key] as? JsonPrimitive)?.contentOrNull.orEmpty().trim()
     val value = if (raw == "false") "" else raw
@@ -96,7 +96,7 @@ private fun visible(field: NodeField, values: Map<String, JsonElement>): Boolean
     }
 }
 
-private val TYPE_LABELS = mapOf("select" to "手动选择", "url-test" to "自动测速", "fallback" to "故障转移", "load-balance" to "负载均衡", "relay" to "链式")
+internal val TYPE_LABELS = mapOf("select" to "手动选择", "smart" to "Smart 智能择优", "url-test" to "自动测速", "fallback" to "故障转移", "load-balance" to "负载均衡", "relay" to "链式")
 
 /** 节点所在策略组的说明。 */
 internal fun nodeGroupsText(node: NodeEntry, groups: List<NodeGroup>): String {
@@ -155,7 +155,7 @@ private fun pickedGroups(groups: List<NodeGroup>, selected: Set<String>): JsonAr
     JsonArray(groups.filter { !it.auto && it.editable && it.name in selected }.map { JsonPrimitive(it.name) })
 
 @Composable
-private fun SheetCard(content: @Composable () -> Unit) {
+internal fun SheetCard(content: @Composable () -> Unit) {
     Card(Modifier.padding(top = 12.dp), colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) { content() }
 }
 
@@ -332,7 +332,7 @@ private fun JsonObject?.orEmpty(): Map<String, JsonElement> = this ?: emptyMap()
 
 /** 单个字段：说明文字后附 mihomo 配置里的键名，方便对照原文。 */
 @Composable
-private fun NodeFieldRow(field: NodeField, value: JsonElement?, policies: List<String>, self: String?, onChange: (JsonElement) -> Unit) {
+internal fun NodeFieldRow(field: NodeField, value: JsonElement?, policies: List<String>, self: String?, onChange: (JsonElement) -> Unit) {
     val label = if (field.required) "${field.label} *" else field.label
     val hint = listOf(field.help, field.key).filter { it.isNotEmpty() }.joinToString(" · ")
     val text = (value as? JsonPrimitive)?.contentOrNull.orEmpty()

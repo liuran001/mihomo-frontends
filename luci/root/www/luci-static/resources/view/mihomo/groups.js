@@ -37,7 +37,9 @@ function usageText(g, groups) {
 	const others = refs.filter(r => !/^规则第/.test(r));
 	if (others.length) parts.push(others.join('、'));
 	const owners = memberOf(g.name, groups);
-	if (owners.length) parts.push('策略组 ' + owners.join('、') + ' 的成员');
+	// 被很多组引用时（如总开关）只给数量，免得摘要过长
+	if (owners.length > 3) parts.push(owners.length + ' 个策略组的成员');
+	else if (owners.length) parts.push('策略组 ' + owners.join('、') + ' 的成员');
 	return parts.length ? '被 ' + parts.join('，') + ' 使用' : '';
 }
 
