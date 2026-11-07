@@ -102,10 +102,24 @@ command -v go >/dev/null 2>&1 || fail '缺少 go，无法构建 mihomo-webd'
   go run . assets -data "$module_root/scrcpy-assets/out"
 )
 mkdir -p "$stage/bin/scrcpy"
-cp "$module_root/webd/THIRD-PARTY-NOTICES.txt" "$stage/bin/WEBD-NOTICES.txt"
-for asset in scrcpy-server-v5.0.1.jar SCRCPY-LICENSE.txt jmuxer.min.js JMUXER-LICENSE.txt; do
+for asset in scrcpy-server-v5.0.1.jar jmuxer.min.js; do
   cp "$module_root/scrcpy-assets/out/$asset" "$stage/bin/scrcpy/$asset"
 done
+# 第三方许可合并成模块根目录下的一个文件，不再分散在各目录
+licenses=$stage/THIRD-PARTY-LICENSES.txt
+: >"$licenses"
+add_license() {
+  printf '==================== %s ====================\n\n' "$1" >>"$licenses"
+  tr -d '\r' <"$2" >>"$licenses"
+  printf '\n\n' >>"$licenses"
+}
+add_license 'mihomo-webd 的 Go 依赖' "$module_root/webd/THIRD-PARTY-NOTICES.txt"
+add_license 'Noto Sans CJK（界面字体子集）' "$stage/webroot/FONT-LICENSE.txt"
+add_license 'yaml' "$stage/webroot/vendor/YAML-LICENSE.txt"
+add_license 'qrcode' "$stage/webroot/vendor/QRCODE-LICENSE.txt"
+add_license 'scrcpy server 5.0.1' "$module_root/scrcpy-assets/out/SCRCPY-LICENSE.txt"
+add_license 'JMuxer 2.1.4' "$module_root/scrcpy-assets/out/JMUXER-LICENSE.txt"
+rm -f "$stage/webroot/FONT-LICENSE.txt" "$stage/webroot/vendor/YAML-LICENSE.txt" "$stage/webroot/vendor/QRCODE-LICENSE.txt"
 for target in arm64:arm64 x64:amd64 arm:arm; do
   (
     cd -- "$module_root/webd"
@@ -116,7 +130,7 @@ JAVA_HOME=${JAVA_HOME:-} sh "$module_root/device-helper/build.sh" "$stage/device
 cp "$stage/device-helper/device-control.jar" "$stage/bin/device-control.jar"
 (
   cd -- "$stage"
-  ZIPOPT='' zip -q -r -X "$stage/module.zip" module.prop customize.sh service.sh post-fs-data.sh scripts webroot bin
+  ZIPOPT='' zip -q -r -X "$stage/module.zip" module.prop customize.sh service.sh post-fs-data.sh THIRD-PARTY-LICENSES.txt scripts webroot bin
 )
 [ ! -L "$dist" ] || fail "dist 不能是符号链接：$dist"
 if [ -e "$out" ] || [ -L "$out" ]; then

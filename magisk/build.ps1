@@ -98,16 +98,31 @@ if ($wasmFiles.Count -eq 0 -or (@($wasmFiles | Where-Object { $_.Length -eq 0 })
 $webdRoot = Join-Path $moduleRoot 'webd'
 $webdOut = Join-Path $webdRoot 'out'
 $webdFiles = @()
-$webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $webdRoot 'THIRD-PARTY-NOTICES.txt')); Entry = 'bin/WEBD-NOTICES.txt' }
 $screenAssets = Join-Path $moduleRoot 'scrcpy-assets/out'
 Push-Location -LiteralPath $webdRoot
 try {
     & go run . assets -data $screenAssets
     if ($LASTEXITCODE -ne 0) { throw '内置屏幕资源下载或校验失败' }
 } finally { Pop-Location }
-foreach ($name in @('scrcpy-server-v5.0.1.jar', 'SCRCPY-LICENSE.txt', 'jmuxer.min.js', 'JMUXER-LICENSE.txt')) {
+foreach ($name in @('scrcpy-server-v5.0.1.jar', 'jmuxer.min.js')) {
     $webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $screenAssets $name)); Entry = "bin/scrcpy/$name" }
 }
+# 第三方许可合并成模块根目录下的一个文件，不再分散在各目录
+$licenseParts = @(
+    @('mihomo-webd 的 Go 依赖', (Join-Path $webdRoot 'THIRD-PARTY-NOTICES.txt')),
+    @('Noto Sans CJK（界面字体子集）', (Join-Path $webDist 'FONT-LICENSE.txt')),
+    @('yaml', (Join-Path $webDist 'vendor/YAML-LICENSE.txt')),
+    @('qrcode', (Join-Path $webDist 'vendor/QRCODE-LICENSE.txt')),
+    @('scrcpy server 5.0.1', (Join-Path $screenAssets 'SCRCPY-LICENSE.txt')),
+    @('JMuxer 2.1.4', (Join-Path $screenAssets 'JMUXER-LICENSE.txt'))
+)
+$licenseText = ($licenseParts | ForEach-Object {
+    "==================== $($_[0]) ====================`n`n" + ([System.IO.File]::ReadAllText($_[1]) -replace "`r", '') + "`n`n"
+}) -join ''
+New-Item -ItemType Directory -Force -Path $webdOut | Out-Null
+$licenseFile = Join-Path $webdOut 'THIRD-PARTY-LICENSES.txt'
+[System.IO.File]::WriteAllText($licenseFile, $licenseText, [System.Text.UTF8Encoding]::new($false))
+$webdFiles += @{ File = (Get-Item -LiteralPath $licenseFile); Entry = 'THIRD-PARTY-LICENSES.txt' }
 foreach ($target in @(@{ Arch = 'arm64'; GoArch = 'arm64' }, @{ Arch = 'x64'; GoArch = 'amd64' }, @{ Arch = 'arm'; GoArch = 'arm' })) {
     $binary = Join-Path $webdOut "$($target.Arch)/mihomo-webd"
     Push-Location -LiteralPath $webdRoot
@@ -158,6 +173,8 @@ try {
         foreach ($file in $webFiles) {
             if ($file.Extension -eq '.map') { continue }
             $relative = [System.IO.Path]::GetRelativePath($webDist, $file.FullName).Replace('\', '/')
+            # 许可文本已合并进 THIRD-PARTY-LICENSES.txt
+            if ($relative -in @('FONT-LICENSE.txt', 'vendor/YAML-LICENSE.txt', 'vendor/QRCODE-LICENSE.txt')) { continue }
             Add-PackageFile $archive $file "webroot/$relative" $false
         }
         foreach ($item in $webdFiles) { Add-PackageFile $archive $item.File $item.Entry $false }
