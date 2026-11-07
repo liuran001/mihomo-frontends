@@ -162,7 +162,11 @@ return view.extend({
 		down.disabled = i === this.groups.length - 1;
 		up.title = '上移';
 		down.title = '下移';
+		// 配置里的图标，与「代理」页一致；没有或加载失败时显示名称首字
+		const icon = mui.iconBox('mh-group-icon');
+		icon.set(g.data && g.data.icon, g.name);
 		return E('div', { 'class': 'mh-pnode' }, [
+			icon,
 			E('div', { 'class': 'mh-pnode-main' }, [ E('b', { title: g.name }, [ g.name, ' ', ...tags ]), E('div', { 'class': 'mh-pnode-meta' }, meta) ]),
 			E('div', { 'class': 'mh-pnode-actions' }, [ up, down, mui.btn('编辑', () => this.edit(g), 'mh-btn-sm'), del ])
 		]);

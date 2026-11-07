@@ -74,38 +74,7 @@ function currentOf(group) {
 	return group.type === 'Smart' ? (group.fixed || null) : (group.fixed || group.now || null);
 }
 
-// 配置里的 icon：http(s) 或 data:image/ 链接，与模块网页一致
-function iconUrl(v) {
-	return (typeof v === 'string' && (/^https?:\/\//.test(v) || /^data:image\//.test(v))) ? v : '';
-}
-
-// 已成功加载过的图标：节点列表每次刷新都重建，这些直接显示图片，不再先闪一下首字
-const loadedIcons = new Set();
-
-// 图标；没有或加载失败时显示名称首字
-function iconBox(cls) {
-	const box = E('span', { 'class': 'mh-icon ' + cls });
-	box.set = (url, name) => {
-		url = iconUrl(url);
-		if (box.url === url && box.label === name) return;
-		box.url = url;
-		box.label = name;
-		// 先显示首字，图片加载成功后再替换：图标地址很慢或失效时不会留一块空白
-		const img = E('img', { alt: '', referrerpolicy: 'no-referrer' });
-		if (url && loadedIcons.has(url)) {
-			img.src = url;
-			return box.replaceChildren(img);
-		}
-		box.replaceChildren(E('b', {}, Array.from(name || '?')[0]));
-		if (!url) return;
-		img.addEventListener('load', () => {
-			loadedIcons.add(url);
-			if (box.url === url) box.replaceChildren(img);
-		});
-		img.src = url;
-	};
-	return box;
-}
+const iconUrl = mui.iconUrl, iconBox = mui.iconBox;
 
 function nodeView(group, idx, opts) {
 	opts = opts || {};
