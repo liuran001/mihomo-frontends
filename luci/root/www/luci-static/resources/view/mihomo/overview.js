@@ -189,7 +189,7 @@ return view.extend({
 			if (this.memHist.length > SPARK_N) this.memHist.shift();
 			this.els.memSpark.replaceChildren(chart.sparkline(this.memHist, { points: SPARK_N }));
 		}, error => {
-			this.els.conns.textContent = error.status === 404 ? '请升级内核' : '读取失败';
+			this.els.conns.textContent = (error.status === 404 || error.status === 405) ? '请升级内核' : '读取失败';
 		}));
 	},
 
@@ -204,7 +204,7 @@ return view.extend({
 				this.els.exitChain.title = chain.join(' → ');
 				this.renderSubs(data.providers || {});
 			}, error => {
-				this.els.exit.textContent = error.status === 404 ? '请升级内核' : '读取失败';
+				this.els.exit.textContent = (error.status === 404 || error.status === 405) ? '请升级内核' : '读取失败';
 				this.els.subs.replaceChildren(mui.empty('无法读取订阅摘要：' + error.message));
 			}),
 			api.get('/ebpf/summary').then(data => this.renderEbpf(data), error => this.renderEbpf(null, error))
@@ -222,7 +222,7 @@ return view.extend({
 	renderEbpf(d, err) {
 		const box = this.els.ebpf;
 		if (!d) {
-			box.replaceChildren(mui.empty(err && err.status === 404 ? '请升级支持轻量 eBPF 摘要的内核' : '无法读取 eBPF 状态'));
+			box.replaceChildren(mui.empty(err && (err.status === 404 || err.status === 405) ? '请升级支持轻量 eBPF 摘要的内核' : '无法读取 eBPF 状态'));
 			return;
 		}
 		const list = d.inbounds || [];

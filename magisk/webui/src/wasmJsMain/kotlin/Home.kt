@@ -238,7 +238,7 @@ internal object LiveHome {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            summaryUnsupported = failure.message.orEmpty().contains("404")
+            summaryUnsupported = failure.message.orEmpty().let { "404" in it || "405" in it }
             trafficError = if (summaryUnsupported) "请更新内核以启用低开销流量概览" else "无法读取流量概览"
             return
         }
@@ -288,7 +288,7 @@ internal object LiveHome {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            overviewUnsupported = failure.message.orEmpty().contains("404")
+            overviewUnsupported = failure.message.orEmpty().let { "404" in it || "405" in it }
             subsError = if (overviewUnsupported) "请更新内核以启用低开销概览" else failure.message ?: "无法读取概览"
         }
         if (!webuiVisible() || ebpfSummaryUnsupported) return
@@ -298,7 +298,7 @@ internal object LiveHome {
             throw cancelled
         } catch (failure: Exception) {
             ebpf = null
-            ebpfSummaryUnsupported = failure.message.orEmpty().contains("404")
+            ebpfSummaryUnsupported = failure.message.orEmpty().let { "404" in it || "405" in it }
             ebpfError = if (ebpfSummaryUnsupported) "请更新内核以读取轻量 eBPF 状态" else "无法读取 eBPF 状态"
         }
     }
