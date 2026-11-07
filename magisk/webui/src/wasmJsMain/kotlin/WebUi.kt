@@ -548,13 +548,5 @@ internal fun PasswordDialog(show: Boolean, title: String = "设置登录密码",
 
 @Composable
 internal fun PasswordField(label: String, value: String, onChange: (String) -> Unit) {
-    top.yukonga.miuix.kmp.basic.TextField(
-        value = value,
-        onValueChange = onChange,
-        label = label,
-        colors = top.yukonga.miuix.kmp.basic.TextFieldDefaults.textFieldColors(backgroundColor = fieldBackground()),
-        singleLine = true,
-        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth(),
-    )
+    NativeField(label, value, password = true, onChange = onChange)
 }

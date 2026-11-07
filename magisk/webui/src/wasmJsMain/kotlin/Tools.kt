@@ -565,8 +565,7 @@ fun LogsPage(onBack: () -> Unit) {
             item(key = "filter") {
                 Column {
                     LogLevelChips(level, counts) { level = it }
-                    TextField(value = query, onValueChange = { query = it }, label = "搜索日志", singleLine = true,
-                        modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp).fillMaxWidth())
+                    NativeField("搜索日志", query, Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) { query = it }
                 }
             }
             if (shown.isEmpty()) item(key = "none") { EmptyState(MiuixIcons.Regular.Notes, "没有匹配的日志") }

@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -238,7 +239,10 @@ fun RowIcon(icon: ImageVector, tint: Color = MiuixTheme.colorScheme.onSurface) {
 
 @Composable
 fun DropdownRow(title: String, options: List<String>, selected: Int, summary: String? = null, enabled: Boolean = true, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    OverlayLayer(expanded)
     WindowDropdownPreference(
+        onExpandedChange = { expanded = it },
         items = options,
         selectedIndex = selected.coerceIn(0, (options.size - 1).coerceAtLeast(0)),
         title = title,
@@ -281,21 +285,11 @@ fun InputField(
     enabled: Boolean = true,
     singleLine: Boolean = true,
     minLines: Int = 1,
-    maxLines: Int = if (singleLine) 1 else 8,
+    maxLines: Int = if (singleLine) 6 else 8,
     onChange: (String) -> Unit,
 ) {
-    TextField(
-        value = value,
-        onValueChange = onChange,
-        label = label,
-        useLabelAsPlaceholder = false,
-        colors = top.yukonga.miuix.kmp.basic.TextFieldDefaults.textFieldColors(backgroundColor = fieldBackground()),
-        enabled = enabled,
-        singleLine = singleLine,
-        minLines = minLines,
-        maxLines = maxLines,
-        modifier = modifier.fillMaxWidth(),
-    )
+    // 原生输入元素：长按出系统文本菜单，输入法与自动填充走浏览器原生
+    NativeField(label, value, modifier, enabled = enabled, singleLine = singleLine, minLines = minLines, maxLines = maxLines, onChange = onChange)
 }
 
 /** 确认对话框（WindowDialog），按钮固定为「取消 / 确认」。 */
@@ -338,8 +332,7 @@ fun EditDialog(
     var error by remember(show) { mutableStateOf("") }
     Dialog(show = show, title = title, summary = summary, onDismissRequest = onDismiss) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextField(value = text, onValueChange = { text = it; error = "" }, singleLine = !multiline,
-                minLines = if (multiline) 4 else 1, maxLines = if (multiline) 10 else 1, modifier = Modifier.fillMaxWidth())
+            NativeField("", text, singleLine = !multiline, minLines = if (multiline) 4 else 1, maxLines = if (multiline) 10 else 6) { text = it; error = "" }
             if (error.isNotEmpty()) Text(error, fontSize = 13.sp, color = Tone.danger)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
@@ -395,8 +388,9 @@ fun Sheet(
     content: @Composable () -> Unit,
 ) {
     BackHandler(enabled = show, onBack = onDismissRequest)
+    val layer = OverlayLayer(show)
     top.yukonga.miuix.kmp.window.WindowBottomSheet(show = show, title = title, onDismissRequest = onDismissRequest,
-        onDismissFinished = onDismissFinished, content = content)
+        onDismissFinished = onDismissFinished) { CompositionLocalProvider(LocalFieldLayer provides layer, content = content) }
 }
 
 /** 对话框：WindowDialog + 系统返回键关闭。 */
@@ -409,5 +403,8 @@ fun Dialog(
     content: @Composable () -> Unit,
 ) {
     BackHandler(enabled = show, onBack = onDismissRequest)
-    WindowDialog(show = show, title = title, summary = summary, onDismissRequest = onDismissRequest, content = content)
+    val layer = OverlayLayer(show)
+    WindowDialog(show = show, title = title, summary = summary, onDismissRequest = onDismissRequest) {
+        CompositionLocalProvider(LocalFieldLayer provides layer, content = content)
+    }
 }
