@@ -147,7 +147,31 @@
     }
   }
 
-  async function remoteRun(script, args, timeout, env) {
+  // 网页服务同时只跑 4 个脚本，旧版超出即返回 429；页面并发读取多项状态时在这里排队，最多同时 3 个，留 1 个给其它标签页。
+  // 图标下载等后台请求走低优先级：同时最多 1 个，且排在界面读取之后，不会把状态读取堵在后面。
+  const REMOTE_SLOTS = 3;
+  let remoteActive = 0;
+  let remoteLowActive = 0;
+  const remoteQueue = [];
+  const remoteLowQueue = [];
+  function remoteNext() {
+    while (remoteActive < REMOTE_SLOTS) {
+      if (remoteQueue.length) { remoteActive++; remoteQueue.shift()(); continue; }
+      if (remoteLowQueue.length && remoteLowActive < 1) { remoteActive++; remoteLowActive++; remoteLowQueue.shift()(); continue; }
+      return;
+    }
+  }
+  function remoteSlot(low) {
+    return new Promise((resolve) => { (low ? remoteLowQueue : remoteQueue).push(resolve); remoteNext(); });
+  }
+  function remoteRelease(low) {
+    remoteActive--;
+    if (low) remoteLowActive--;
+    remoteNext();
+  }
+
+  async function remoteRun(script, args, timeout, env, low) {
+    await remoteSlot(low);
     try {
       const body = await remoteJson('api/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -156,17 +180,19 @@
       return { errno: Number(body.errno), stdout: String(body.stdout || ''), stderr: String(body.stderr || '') };
     } catch (error) {
       return { errno: -1, stdout: '', stderr: '网页服务请求失败：' + error.message };
+    } finally {
+      remoteRelease(low);
     }
   }
 
   // 调用模块脚本子命令：script 为 SCRIPTS 之一，args 为字符串参数，env 只允许 ENV_NAMES。
-  function run(script, args = [], timeout = 30000, env = {}) {
+  function run(script, args = [], timeout = 30000, env = {}, low = false) {
     if (!SCRIPTS.includes(script)) return Promise.resolve({ errno: -1, stdout: '', stderr: '不允许的脚本：' + script });
     for (const name of Object.keys(env)) {
       if (!ENV_NAMES.includes(name)) return Promise.resolve({ errno: -1, stdout: '', stderr: '不允许的环境变量：' + name });
     }
     const list = args.map(String);
-    if (remoteMode()) return remoteRun(script, list, timeout, env);
+    if (remoteMode()) return remoteRun(script, list, timeout, env, low);
     const prefix = Object.entries(env).map(([name, value]) => name + '=' + shq(value) + ' ').join('');
     // 子命令（首个参数）是固定的小写单词，不加引号，便于在日志里辨认
     const words = list.map((arg, index) => (index === 0 && /^[a-z][a-z_-]*$/.test(arg) ? arg : shq(arg)));
@@ -664,7 +690,7 @@
     } catch (error) {
       // 跨域或网络失败，改由模块下载
     }
-    const result = await run('host.sh', ['icon', url], 20000);
+    const result = await run('host.sh', ['icon', url], 20000, {}, true);
     if (result.errno !== 0) throw new Error(result.stderr.trim() || '下载图标失败');
     return b64bytes(result.stdout);
   }

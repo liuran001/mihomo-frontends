@@ -1460,6 +1460,33 @@ test('remote mode runs module scripts through api/run without composing shell co
   assert.deepEqual(bridge.commands, [], 'no ksu.exec in remote mode');
 });
 
+test('remote mode queues script runs instead of overrunning the web service slots', async () => {
+  let active = 0;
+  let peak = 0;
+  const order = [];
+  const bridge = makeBridge({
+    remote: {},
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      active++;
+      peak = Math.max(peak, active);
+      order.push(body.script + ' ' + body.args[0]);
+      await new Promise((resolve) => setTimeout(resolve, body.args[0] === 'icon' ? 30 : 10));
+      active--;
+      const stdout = body.args[0] === 'icon' ? Buffer.from('GIF89a').toString('base64') : JSON.stringify({ ok: true, running: true, desired: 'manual', allowed: true });
+      return { ok: true, status: 200, json: async () => ({ errno: 0, stdout, stderr: '' }) };
+    },
+  });
+  const icons = ['https://a.invalid/1.png', 'https://a.invalid/2.png', 'https://a.invalid/3.png'].map((url) => bridge.request('proxyIcon', { url }));
+  const reads = Array.from({ length: 6 }, () => bridge.request('status'));
+  for (const result of await Promise.all(reads)) assert.equal(result.ok, true, result.error);
+  await Promise.all(icons);
+  assert.ok(peak <= 3, 'at most 3 concurrent api/run, got ' + peak);
+  const firstStatus = order.indexOf('mihomo.sh status');
+  assert.ok(order.slice(0, firstStatus).filter((entry) => entry === 'host.sh icon').length <= 1, 'icons never take more than one slot ahead of UI reads');
+  assert.ok(order.lastIndexOf('mihomo.sh status') < order.lastIndexOf('host.sh icon'), 'UI reads are served before queued icons');
+});
+
 test('lightweight overview endpoints pass through without falling back to full snapshots', async () => {
   for (const path of ['/connections/summary', '/overview', '/ebpf/summary']) {
     const bridge = remoteBridge();

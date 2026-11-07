@@ -108,6 +108,7 @@ type Server struct {
 	scrcpySlots      chan struct{}
 	passwordSlots    chan struct{}
 	runSlots         chan struct{}
+	runWait          time.Duration
 	controllerMu     sync.Mutex
 	controllerCache  controllerSettings
 	controllerTime   time.Time
@@ -123,7 +124,7 @@ func newServer(configPath, webroot, scriptDir, dataDir string) (*Server, error) 
 		shell: "/system/bin/sh", sessions: map[string]session{}, failures: map[string]*failures{},
 		enhancedSessions: map[string]enhancedSession{}, deviceSlots: make(chan struct{}, 2),
 		terminalSlots: make(chan struct{}, 1), scrcpySlots: make(chan struct{}, 8), passwordSlots: make(chan struct{}, 2),
-		runSlots: make(chan struct{}, 4),
+		runSlots: make(chan struct{}, 4), runWait: 20 * time.Second,
 	}
 	if _, err := os.Stat(server.shell); err != nil {
 		server.shell = "sh"
@@ -508,10 +509,16 @@ func (s *Server) handleRun(writer http.ResponseWriter, request *http.Request) {
 		}
 		env = append(env, name+"="+value)
 	}
+	// 页面打开时会并发读多项状态，超过并发上限的请求排队等空位，而不是立即 429（那样页面会一直读不出来）
+	wait := time.NewTimer(s.runWait)
 	select {
 	case s.runSlots <- struct{}{}:
+		wait.Stop()
 		defer func() { <-s.runSlots }()
-	default:
+	case <-request.Context().Done():
+		wait.Stop()
+		return
+	case <-wait.C:
 		writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "模块操作繁忙，请稍后重试"})
 		return
 	}

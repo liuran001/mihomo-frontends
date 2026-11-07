@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type changingReader struct {
@@ -77,6 +78,7 @@ func TestConfigFailureClosesAccessAndRecovers(t *testing.T) {
 
 func TestRunConcurrencyIsBounded(t *testing.T) {
 	fixture := newFixture(t, defaultConfig(), "")
+	fixture.server.runWait = 50 * time.Millisecond
 	for range cap(fixture.server.runSlots) {
 		fixture.server.runSlots <- struct{}{}
 	}
@@ -90,5 +92,23 @@ func TestRunConcurrencyIsBounded(t *testing.T) {
 	response = fixture.do(local(), http.MethodPost, "/api/run", `{"script":"host.sh"} {}`, apiHeaders)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("multiple request objects accepted: %d", response.Code)
+	}
+}
+
+func TestRunWaitsForFreeSlot(t *testing.T) {
+	fixture := newFixture(t, defaultConfig(), "")
+	for range cap(fixture.server.runSlots) {
+		fixture.server.runSlots <- struct{}{}
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		<-fixture.server.runSlots
+	}()
+	response := fixture.do(local(), http.MethodPost, "/api/run", `{"script":"host.sh"}`, apiHeaders)
+	if response.Code != http.StatusOK {
+		t.Fatalf("queued script request should run once a slot frees: %d %s", response.Code, response.Body.String())
+	}
+	for range cap(fixture.server.runSlots) - 1 {
+		<-fixture.server.runSlots
 	}
 }
