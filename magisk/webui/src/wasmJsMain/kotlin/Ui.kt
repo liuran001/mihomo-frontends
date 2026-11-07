@@ -218,13 +218,13 @@ fun SwitchRow(title: String, checked: Boolean, summary: String? = null, enabled:
 
 @Composable
 fun ArrowRow(title: String, summary: String? = null, value: String? = null, enabled: Boolean = true,
-             startIcon: ImageVector? = null, onClick: () -> Unit) {
+             startIcon: ImageVector? = null, startContent: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
     ArrowPreference(
         title = title,
         summary = summary,
         enabled = enabled,
         onClick = onClick,
-        startAction = startIcon?.let { icon -> { RowIcon(icon) } },
+        startAction = startContent ?: startIcon?.let { icon -> { RowIcon(icon) } },
         endActions = {
             if (!value.isNullOrEmpty()) Text(value, fontSize = 14.sp, color = Tone.muted, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 160.dp))

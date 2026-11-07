@@ -241,8 +241,9 @@ private fun decodeIcon(uri: String): ImageBitmap? {
     return org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
 }
 
+/** 策略组 / 节点图标：经 bridge 下载并缓存；没有或加载失败时显示名称首字（策略组编辑列表也用）。 */
 @Composable
-private fun GroupIcon(url: String, name: String, size: androidx.compose.ui.unit.Dp = 36.dp) {
+internal fun GroupIcon(url: String, name: String, size: androidx.compose.ui.unit.Dp = 36.dp) {
     val modifier = Modifier.size(size).clip(RoundedCornerShape(8.dp))
     if (url.isEmpty()) {
         Box(modifier.background(MiuixTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {

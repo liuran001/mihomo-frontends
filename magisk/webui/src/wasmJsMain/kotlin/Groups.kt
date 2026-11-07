@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -108,7 +109,10 @@ internal fun GroupRows(onOpen: (GroupEntry?) -> Unit) {
     for (group in view.list) {
         val usage = groupUsage(group)
         val summary = listOf(group.lock.ifEmpty { group.summary }, usage).filter { it.isNotEmpty() }.joinToString(" · ")
-        ArrowRow(group.name, summary, enabled = group.lock.isEmpty() && state.busy.isEmpty()) { onOpen(group) }
+        // 配置里的图标，与「代理」页一致；没有或加载失败时显示名称首字
+        val icon = (group.data["icon"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        ArrowRow(group.name, summary, enabled = group.lock.isEmpty() && state.busy.isEmpty(),
+            startContent = { Box(Modifier.padding(end = 16.dp)) { GroupIcon(icon, group.name, 32.dp) } }) { onOpen(group) }
     }
     ArrowRow("新增策略组", "例如按地区自动选择，或给某类网站单独选出口", startIcon = MiuixIcons.Regular.Add,
         enabled = state.busy.isEmpty() && view.fields.isNotEmpty()) { onOpen(null) }
