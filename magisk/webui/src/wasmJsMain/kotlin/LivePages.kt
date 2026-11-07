@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -136,10 +137,11 @@ private fun DelayChip(name: String, modifier: Modifier = Modifier) {
     val state = LiveProxies
     val delay = state.delays[name]
     val testing = name in state.testing
-    Box(modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = !testing) { state.testNode(name) }
-        .padding(horizontal = 6.dp, vertical = 2.dp), contentAlignment = Alignment.Center) {
+    // 固定高度与最小宽度：测速时文字换成转圈，尺寸不变，卡片不会跟着跳
+    Box(modifier.height(20.dp).defaultMinSize(minWidth = 40.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = !testing) { state.testNode(name) }
+        .padding(horizontal = 6.dp), contentAlignment = Alignment.Center) {
         if (testing) CircularProgressIndicator(size = 12.dp, strokeWidth = 1.5.dp)
-        else Text(delayText(delay), fontSize = 12.sp, fontWeight = FontWeight.Medium, color = delayColor(delay), maxLines = 1)
+        else Text(delayText(delay), fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, color = delayColor(delay), maxLines = 1)
     }
 }
 
