@@ -33,6 +33,7 @@ Depends: $DEPENDS
 Source: https://github.com/liuran001/mihomo-frontends
 SourceName: $NAME
 Section: luci
+License: MIT
 URL: https://github.com/liuran001/mihomo
 Architecture: all
 Installed-Size: $SIZE

@@ -62,3 +62,7 @@ opkg update && opkg install luci-app-mihomo-ebpf_*_all.ipk    # 24.10
 ## 开发
 
 构建与测试说明见 [`luci/README.md`](luci/README.md) 和 `magisk/tests/`，打包脚本在 `magisk/build.sh`、`luci/scripts/`。
+
+## 许可
+
+本仓库代码使用 [MIT](LICENSE) 许可。随包分发的第三方组件各自的许可见模块里的 `THIRD-PARTY-LICENSES.txt`。

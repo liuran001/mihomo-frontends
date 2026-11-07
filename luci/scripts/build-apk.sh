@@ -43,6 +43,7 @@ $ROOTCMD "$APK" mkpkg \
 	--info "arch:noarch" \
 	--info "description:LuCI support for mihomo (liuran001 eBPF fork)" \
 	--info "url:https://github.com/liuran001/mihomo" \
+	--info "license:MIT" \
 	--info "depends:$DEPENDS" \
 	--script "post-install:$S/post-install" \
 	--script "post-upgrade:$S/post-upgrade" \
