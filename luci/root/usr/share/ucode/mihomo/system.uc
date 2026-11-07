@@ -235,16 +235,30 @@ function ts_profile(state) {
 	};
 }
 
-// 与 mihomo 一致：缺省为 tailscale，相对路径相对于配置目录；只接受配置目录之内的路径
+// 退出登录会整个删除状态目录，这些配置目录下的子目录绝不能当作状态目录
+const TS_PROTECTED = ['backup', '.luci', 'substore', 'proxy_provider', 'rule_provider', 'ui'];
+
+// 与 mihomo 一致：缺省为 tailscale，相对路径相对于配置目录。
+// 按段规范化（去掉 . 与重复的 /，拒绝 ..），只接受配置目录之内、且不是配置目录本身或上面这些目录的路径；
+// 否则 state-dir 写成「.」「./」时，退出登录会删掉整个配置目录。
 function ts_dir(dir) {
 	if (dir == null || dir == '')
 		dir = 'tailscale';
 	if (type(dir) != 'string')
 		return null;
-	let p = (substr(dir, 0, 1) == '/') ? dir : P.HOME + '/' + dir;
-	if (index(p + '/', '/../') >= 0 || index(p, P.HOME + '/') != 0)
+	let parts = [];
+	for (let s in split((substr(dir, 0, 1) == '/') ? dir : P.HOME + '/' + dir, '/')) {
+		if (s == '' || s == '.')
+			continue;
+		if (s == '..')
+			return null;
+		push(parts, s);
+	}
+	let p = '/' + join('/', parts);
+	if (substr(p, 0, length(P.HOME) + 1) != P.HOME + '/')
 		return null;
-	return p;
+	let first = split(substr(p, length(P.HOME) + 1), '/')[0];
+	return (index(TS_PROTECTED, first) >= 0) ? null : p;
 }
 
 function tailscale_status() {

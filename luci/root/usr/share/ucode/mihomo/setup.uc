@@ -478,9 +478,9 @@ function fetch_config(args) {
 	U.mkdir_p(P.RUN_DIR);
 	let out = P.RUN_DIR + '/fetch-' + U.rand_hex(4);
 	// 订阅转换类地址不走 GitHub 镜像：服务运行时先经本机代理，再直连；每条线路限时，整体不超过 RPC 超时
-	let r = CORE.fetch(url, out, { routes: CORE.routes({ mirror: '' }, CORE.proxy_port()), args: ['-A', ua], max_time: 9 });
+	let r = CORE.fetch(url, out, { routes: CORE.routes({ mirror: '' }, CORE.proxy_port()), args: ['-A', ua, '--max-filesize', '' + (MAX_CONTENT + 1)], max_time: 9 });
 	if (!r.ok)
-		return fail('下载失败：' + r.error);
+		return fail(index(r.error, 'Maximum file size') >= 0 ? '下载的内容过大（超过 4 MB）' : '下载失败：' + r.error);
 	let size = fs.stat(out)?.size ?? 0;
 	let text = (size > 0 && size <= MAX_CONTENT) ? fs.readfile(out) : null;
 	fs.unlink(out);

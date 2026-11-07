@@ -93,6 +93,11 @@ eq(SY.ts_dir(null), P.HOME + '/tailscale', 'state-dir 缺省为 tailscale');
 eq(SY.ts_dir('ts-a'), P.HOME + '/ts-a', '相对路径相对配置目录');
 eq(SY.ts_dir('../x'), null, '拒绝配置目录之外');
 eq(SY.ts_dir('/tmp/x'), null, '拒绝配置目录之外的绝对路径');
+eq(SY.ts_dir('.'), null, '拒绝配置目录本身（退出登录会删掉整个配置目录）');
+eq(SY.ts_dir('./'), null, '拒绝 ./');
+eq(SY.ts_dir(P.HOME + '/.'), null, '拒绝绝对路径写法的配置目录本身');
+eq(SY.ts_dir('backup'), null, '拒绝备份目录');
+eq(SY.ts_dir('./ts-a//x/'), P.HOME + '/ts-a/x', '规范化多余的 . 与 /');
 
 U.write_file(P.CONFIG, 'proxies:\n  - name: TS-A\n    type: tailscale\n    state-dir: ts-a\n  - {name: S, type: socks5, server: 127.0.0.1, port: 1}\n  - {name: TS-B, type: tailscale}\n');
 U.mkdir_p(P.HOME + '/ts-a');

@@ -377,7 +377,14 @@ function config_body(ctx, opts) {
 		return finish('failed', { ...extra, detail: log,
 			error: was_running ? '新配置启动失败，且没有可恢复的备份' : '服务没有成功启动，新配置已保存，请查看日志并在配置文件页修改' });
 	}
-	U.write_file(P.CONFIG, fs.readfile(P.BACKUP_DIR + '/' + backup));
+	let saved = fs.readfile(P.BACKUP_DIR + '/' + backup);
+	// 读不到备份时不能把空内容写回去；保留新配置并停在失败状态，交给用户处理
+	if (saved == null || !U.write_file(P.CONFIG, saved)) {
+		if (!was_running)
+			U.run(U.shq(P.INIT) + ' stop');
+		return finish('failed', { ...extra, detail: log, backup: backup,
+			error: '新配置启动失败，恢复备份 ' + backup + ' 也失败了，请在「配置文件」页的备份里手动恢复' });
+	}
 	if (!was_running) {
 		U.run(U.shq(P.INIT) + ' stop');
 		return finish('rolled_back', { ...extra, error: '新配置启动失败，已恢复为原配置', detail: log, backup: backup });

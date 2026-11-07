@@ -2004,11 +2004,40 @@ function validation_copy(src, dst) {
 	return Y.edit(dst, edits) == null;
 }
 
+// 删除订阅、规则集时一并删掉的缓存文件：不能是配置文件本身、程序的状态目录，也不能仍被别的订阅或规则集使用
+const CACHE_KEEP_DIRS = ['backup', '.luci', 'substore', 'ui'];
+
+function cache_removable(path, used) {
+	if (home_path(path) != path || path == P.CONFIG || path == P.CANDIDATE || path == P.HOME + '/cache.db' || used[path])
+		return false;
+	let rel = substr(path, length(P.HOME) + 1);
+	return index(CACHE_KEEP_DIRS, split(rel, '/')[0]) < 0 && fs.stat(path)?.type == 'file';
+}
+
+// 保存后的配置与停用列表里仍在引用的 path；读不到配置时返回 null（此时不删任何文件）
+function cache_paths_in_use() {
+	let v = Y.query(P.CONFIG, '[(.["proxy-providers"] // {})[]?.path, (.["rule-providers"] // {})[]?.path]');
+	if (type(v) != 'array')
+		return null;
+	let used = {};
+	for (let p in v)
+		if (home_path(p))
+			used[home_path(p)] = true;
+	for (let k, d in disabled_read())
+		if (home_path(obj(obj(d).def).path))
+			used[home_path(d.def.path)] = true;
+	return used;
+}
+
 // 保存任务成功后执行（apply.uc 调用）；动作再次校验
 function run_post(list) {
+	let used = null;
 	for (let a in arr(list)) {
-		if (a?.t == 'unlink' && home_path(a.path) == a.path && fs.stat(a.path)?.type == 'file')
-			fs.unlink(a.path);
+		if (a?.t == 'unlink') {
+			used ??= cache_paths_in_use();
+			if (used != null && cache_removable(a.path, used))
+				fs.unlink(a.path);
+		}
 		else if (a?.t == 'disabled_remove' && type(a.name) == 'string')
 			disabled_remove(a.name);
 	}

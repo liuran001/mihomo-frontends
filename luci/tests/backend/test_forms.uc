@@ -489,6 +489,23 @@ eq([r.error, names(X()['proxy-groups'])], [null, ['单独', '节点选择', 'dns
 ok(valid(), '排序后 -t 通过');
 ok(run([{ op: 'group.move', name: '单独', to: 9 }]).error, '拒绝越界位置');
 
+// 删除后清理缓存：只删已经没人用的普通缓存文件
+U.mkdir_p(P.HOME + '/pp');
+U.write_file(P.HOME + '/pp/old.yaml', 'x');
+U.write_file(P.HOME + '/pp/shared.yaml', 'x');
+U.write_file(P.CONFIG, 'proxy-providers:
+  A: {type: http, url: "http://a", path: ./pp/shared.yaml}
+rule-providers:
+  R: {type: http, behavior: domain, url: "http://r", path: pp//shared.yaml}
+');
+let cfg = fs.readfile(P.CONFIG);
+F.run_post([{ t: 'unlink', path: P.HOME + '/pp/old.yaml' }, { t: 'unlink', path: P.HOME + '/pp/shared.yaml' },
+	{ t: 'unlink', path: P.CONFIG }, { t: 'unlink', path: P.HOME + '/backup/x' }, { t: 'unlink', path: P.HOME + '/pp/../config.yaml' }]);
+eq([fs.stat(P.HOME + '/pp/old.yaml'), fs.stat(P.HOME + '/pp/shared.yaml')?.type, fs.readfile(P.CONFIG)], [null, 'file', cfg],
+	'删除没人用的缓存；保留仍被引用的缓存与配置文件本身');
+U.rm_tree(P.HOME + '/pp');
+U.write_file(P.CONFIG, FIXTURE);
+
 fs.unlink(tmp);
 fs.unlink(P.RUN_DIR + '/orig.yaml');
 eq(length(filter(fs.lsdir(P.RUN_DIR), (n) => match(n, /^(forms|edit|ops)-/))), 0, '不留临时文件');

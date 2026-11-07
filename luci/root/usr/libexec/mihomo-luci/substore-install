@@ -82,8 +82,15 @@ install_frontend() {
 	[ -n "$index" ] || { rm -rf "$work"; die '前端压缩包里没有 index.html'; }
 	rm -rf "$DIR/frontend.old"
 	[ -d "$DIR/frontend" ] && mv "$DIR/frontend" "$DIR/frontend.old"
-	mv "${index%/index.html}" "$DIR/frontend" && rm -rf "$DIR/frontend.old" && echo "${tag:-latest}" >"$DIR/frontend.version"
-	rm -rf "$work"
+	if ! mv "${index%/index.html}" "$DIR/frontend"; then
+		# 新前端放不进去时把旧版本放回原处，不留下一个没有前端的安装
+		rm -rf "$DIR/frontend"
+		[ -d "$DIR/frontend.old" ] && mv "$DIR/frontend.old" "$DIR/frontend"
+		rm -rf "$work"
+		die '替换 Sub-Store 前端失败'
+	fi
+	rm -rf "$DIR/frontend.old" "$work"
+	echo "${tag:-latest}" >"$DIR/frontend.version"
 	say "前端 ${tag:-latest} 下载完成"
 }
 
