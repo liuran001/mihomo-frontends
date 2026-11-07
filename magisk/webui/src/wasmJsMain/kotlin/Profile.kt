@@ -115,6 +115,9 @@ internal object ProfileState {
     var sections by mutableStateOf<List<ConfigSection>>(emptyList())
     var providers by mutableStateOf<List<ConfigItem>>(emptyList())
     var ruleProviders by mutableStateOf<List<ConfigItem>>(emptyList())
+    /** 订阅、规则集列表显示暂存修改后的结果；撤销时回到原配置里的列表。 */
+    private var baseProviders = emptyList<ConfigItem>()
+    private var baseRuleProviders = emptyList<ConfigItem>()
     var providerTemplate by mutableStateOf<List<ConfigField>>(emptyList())
     var ruleProviderTemplate by mutableStateOf<List<ConfigField>>(emptyList())
     var summary by mutableStateOf<JsonObject?>(null)
@@ -172,6 +175,8 @@ internal object ProfileState {
         }
         providers = schema.objects("providers").map { it.item() }
         ruleProviders = schema.objects("ruleProviders").map { it.item() }
+        baseProviders = providers
+        baseRuleProviders = ruleProviders
         providerTemplate = schema.objects("providerFields").map { it.field() }
         ruleProviderTemplate = schema.objects("ruleProviderFields").map { it.field() }
         summary = schema["summary"] as? JsonObject
@@ -207,11 +212,34 @@ internal object ProfileState {
         collectionOps = collectionOps + JsonObject(mapOf("op" to JsonPrimitive(op), "name" to JsonPrimitive(name),
             "values" to JsonObject(values)))
         notice = ""
+        refreshItems()
+    }
+
+    /** 暂存的订阅、规则集增删改立即反映到列表：在本地按暂存修改试算一遍配置，取出新的列表。 */
+    private fun refreshItems() {
+        val content = source ?: return
+        val pending = ops()
+        scope.launch {
+            try {
+                val patched = request("configPatch", JsonObject(mapOf("content" to JsonPrimitive(content), "ops" to pending))).string("content")
+                val schema = request("configSchema", json("content" to patched))
+                // 期间又有新的暂存或已保存、撤销时，以后来的为准
+                if (source != content || ops() != pending) return@launch
+                providers = schema.objects("providers").map { it.item() }
+                ruleProviders = schema.objects("ruleProviders").map { it.item() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error = failure.message ?: "暂存失败"
+            }
+        }
     }
 
     fun discard() {
         edits = emptyMap()
         collectionOps = emptyList()
+        providers = baseProviders
+        ruleProviders = baseRuleProviders
         nodes = baseNodes
         groups = baseGroups
         rules = baseRuleExtras
