@@ -126,6 +126,8 @@ func newServer(configPath, webroot, scriptDir, dataDir string) (*Server, error) 
 		terminalSlots: make(chan struct{}, 1), scrcpySlots: make(chan struct{}, 8), passwordSlots: make(chan struct{}, 2),
 		runSlots: make(chan struct{}, 4), runWait: 20 * time.Second,
 	}
+	// 旧版把热点名称和密码另存在 webui-hotspot.json；现在直接读写系统热点配置，旧文件不再需要
+	_ = os.Remove(filepath.Join(dataDir, "webui-hotspot.json"))
 	if _, err := os.Stat(server.shell); err != nil {
 		server.shell = "sh"
 	}

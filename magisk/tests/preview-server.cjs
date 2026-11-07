@@ -50,7 +50,8 @@ function mockBackend() {
   let operationUnlocked = false;
   let screenRunning = false;
   let coreVersion = 'alpha-smart-e272b9d-ebpf';
-  let hotspot = { ok: true, enabled: false, tethered: false, configured: false, ssid: '', band: '2' };
+  let hotspot = { ok: true, enabled: true, tethered: true, ifaces: ['wlan1'], config: { ssid: 'Xiaomi 18 Pro', password: 'sample-pass-123', security: 1, band: 3, hidden: false, max_clients: 10 },
+    clients: [{ mac: 'aa:bb:cc:dd:ee:01', iface: 'wlan1', ipv4: '192.168.43.20', ipv6: [], state: 'REACHABLE' }, { mac: 'aa:bb:cc:dd:ee:02', iface: 'wlan1', ipv4: '192.168.43.31', ipv6: [], state: 'STALE' }] };
   if (previewMode.has('enhanced')) {
     webui.enabled = true;
     webui.has_password = true;
@@ -161,8 +162,8 @@ function mockBackend() {
           case 'sms': result = { ok: true, messages: [{ id: '1', address: 'QA-SENDER', body: 'QA-SMS-NOT-A-REAL-MESSAGE', date: '1793880000000', type: '1' }] }; break;
           case 'hotspot': result = hotspot; break;
           case 'hotspot-set':
-            if (body.config) hotspot = { ...hotspot, configured: true, ssid: body.config.ssid, band: body.config.band };
-            if ('enabled' in body) hotspot = { ...hotspot, enabled: body.enabled, tethered: body.enabled };
+            if (body.config) { const { password, ...rest } = body.config; hotspot = { ...hotspot, config: { ...hotspot.config, ...rest, ...(password ? { password } : {}) } }; }
+            if ('enabled' in body) hotspot = { ...hotspot, enabled: body.enabled, tethered: body.enabled, clients: body.enabled ? hotspot.clients : [] };
             result = hotspot;
             break;
           case 'terminal': result = { ok: true, errno: 0, stdout: 'QA-TERMINAL-RESULT', stderr: '', truncated: false }; break;

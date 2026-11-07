@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -45,7 +46,7 @@ func TestDeviceBatteryAndSMSAreOnDemandAndBounded(t *testing.T) {
 	}
 }
 
-func TestHotspotUsesTetheringBridgeWithoutPasswordInArguments(t *testing.T) {
+func TestHotspotUsesSystemConfigWithoutPasswordInArguments(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
 		t.Fatal(err)
@@ -53,16 +54,38 @@ func TestHotspotUsesTetheringBridgeWithoutPasswordInArguments(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "bin", "device-control.jar"), []byte("fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fakeDeviceCommand(t, "app_process", `{"ok":true,"enabled":true,"tethered":true,"state":13,"submitted":true}`)
+	// 桥接收到的参数里只有配置文件路径；把参数记下来，确认没有密码
+	argsFile := filepath.Join(dir, "args")
+	fakeDeviceCommand(t, "app_process", `{"ok":true,"enabled":true,"tethered":true,"state":13,"ifaces":["wlan1"],"config":{"ssid":"Test Hotspot","password":"sample-password","security":1,"band":3}}`)
+	wrapper := filepath.Join(filepath.Dir(lookPath(t, "app_process")), "app_process")
+	original, _ := os.ReadFile(wrapper)
+	_ = os.WriteFile(wrapper, append([]byte("#!/bin/sh\necho \"$@\" >>"+argsFile+"\n"), original[len("#!/bin/sh\n"):]...), 0o700)
+	fakeIP := filepath.Join(filepath.Dir(wrapper), "ip")
+	_ = os.WriteFile(fakeIP, []byte("#!/bin/sh\nprintf '192.168.43.20 lladdr AA:BB:CC:DD:EE:01 REACHABLE\\nfe80::1 lladdr aa:bb:cc:dd:ee:01 STALE\\n2001:db8::5 lladdr aa:bb:cc:dd:ee:01 STALE\\n192.168.43.21 FAILED\\n'\n"), 0o700)
 	server := &Server{scriptDir: filepath.Join(dir, "scripts"), dataDir: dir}
 	enabled := true
-	result, err := server.setHotspot(context.Background(), hotspotRequest{Enabled: &enabled, Config: &hotspotConfig{SSID: "Test Hotspot", Password: "sample-password", Band: "2"}})
+	ssid, security, band := "Test Hotspot", 1, 3
+	result, err := server.setHotspot(context.Background(), hotspotRequest{Enabled: &enabled, Config: &hotspotConfig{SSID: &ssid, Password: "sample-password", Security: &security, Band: &band}})
 	if err != nil || result["tethered"] != true || result["enabled"] != true {
 		t.Fatalf("tethering result: %v %v", result, err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "webui-hotspot.json"))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatal("hotspot password file must be private")
+	clients := result["clients"].([]map[string]any)
+	if len(clients) != 1 || clients[0]["mac"] != "aa:bb:cc:dd:ee:01" || clients[0]["ipv4"] != "192.168.43.20" || len(clients[0]["ipv6"].([]string)) != 1 {
+		t.Fatalf("hotspot clients: %v", clients)
+	}
+	args, _ := os.ReadFile(argsFile)
+	if strings.Contains(string(args), "sample-password") || !strings.Contains(string(args), "DeviceControl config") || !strings.Contains(string(args), "DeviceControl start") {
+		t.Fatalf("bridge arguments: %s", args)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "run", "webui-hotspot.json")); !os.IsNotExist(err) {
+		t.Fatal("hotspot password file must be removed after use")
+	}
+	open := 0
+	if err := (hotspotConfig{Security: &open, Password: "sample-password"}).validate(); err == nil {
+		t.Fatal("password for open hotspot accepted")
+	}
+	if err := (hotspotConfig{Password: "sample-password"}).validate(); err == nil {
+		t.Fatal("password without security type accepted")
 	}
 	fakeDeviceCommand(t, "app_process", `{"ok":false,"error":"ROM denied"}`)
 	if _, err := server.setHotspot(context.Background(), hotspotRequest{Enabled: &enabled}); err == nil || !strings.Contains(err.Error(), "ROM denied") {
@@ -71,6 +94,15 @@ func TestHotspotUsesTetheringBridgeWithoutPasswordInArguments(t *testing.T) {
 	if _, err := server.setHotspot(context.Background(), hotspotRequest{}); err == nil {
 		t.Fatal("empty hotspot action accepted")
 	}
+}
+
+func lookPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestTerminalTimeoutAndOutputBudget(t *testing.T) {

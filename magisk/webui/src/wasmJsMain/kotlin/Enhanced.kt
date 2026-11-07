@@ -48,6 +48,7 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     var command by remember { mutableStateOf("") }
     var timeout by remember { mutableStateOf("15") }
     var configureHotspot by remember { mutableStateOf(false) }
+    var showHotspotPassword by remember { mutableStateOf(false) }
     var confirmTerminal by remember { mutableStateOf(false) }
     var confirmHotspot by remember { mutableStateOf<Boolean?>(null) }
     var editScrcpyPort by remember { mutableStateOf(false) }
@@ -80,6 +81,10 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     }
 
     LaunchedEffect(Unit) { operate("status", "读取增强状态…") { session = it } }
+    // 解锁后自动读一次热点：状态、系统热点配置与已连接设备
+    LaunchedEffect(unlocked, busy.isEmpty()) {
+        if (unlocked && hotspot == null && busy.isEmpty()) operate("hotspot", "读取热点状态…") { hotspot = it }
+    }
     DisposableEffect(Unit) {
         onDispose {
             password = ""
@@ -162,13 +167,33 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         }
         group("热点", "hotspot") {
             val status = hotspot
-            InfoRow("热点状态", when (status?.get("enabled")?.toString()) { "true" -> "开启"; "false" -> "关闭"; else -> "未确认" })
+            val config = status?.get("config") as? JsonObject
+            InfoRow("热点状态", when (status?.get("enabled")?.toString()) { "true" -> "开启"; "false" -> "关闭"; else -> "未读取" })
             status?.get("tethered")?.let { InfoRow("系统网络共享", if (it.toString() == "true") "已启用" else "未启用") }
-            if (status?.boolean("configured") == true) InfoRow("保存的热点", status.string("ssid"), "频段：${status.string("band")}")
-            Caption("通过系统热点与网络共享接口操作，ROM 支持情况不同；拒绝或超时会明确报错。更改热点可能断开当前连接；共享流量策略在「共享与数据面」设置。")
-            ArrowRow("热点配置", "保存名称、WPA2 密码和频段；下次开启时应用", enabled = idle) { configureHotspot = true }
+            if (config != null) {
+                // 系统保存的热点配置（与系统设置里看到的一致）
+                InfoRow("名称", config.string("ssid").ifEmpty { "-" })
+                val secret = config.string("password")
+                val security = config.int("security")
+                if (security != 0) InfoRow("密码", if (secret.isEmpty()) "-" else if (showHotspotPassword) secret else "••••••••",
+                    if (secret.isEmpty()) null else "点按${if (showHotspotPassword) "隐藏" else "显示"}") { showHotspotPassword = !showHotspotPassword }
+                InfoRow("加密", hotspotSecurityName(security))
+                InfoRow("频段", hotspotBandName(config.int("band")), if (config.boolean("hidden")) "隐藏网络" else null)
+                if (config.int("max_clients") > 0) InfoRow("最多连接", "${config.int("max_clients")} 台")
+            }
+            status?.string("config_error")?.takeIf { it.isNotEmpty() }?.let { Caption(it, Tone.warning) }
+            val clients = status?.objects("clients")
+            if (clients != null && status.boolean("tethered")) {
+                InfoRow("已连接设备", "${clients.size} 台")
+                for (client in clients) {
+                    InfoRow(client.string("ipv4").ifEmpty { (client["ipv6"] as? kotlinx.serialization.json.JsonArray)?.firstOrNull()?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "-" },
+                        client.string("mac"), if (client.string("state") == "REACHABLE") "在线" else "最近在线")
+                }
+            }
+            Caption("读取和修改的是系统热点设置（与系统设置里一致），ROM 不支持时会明确报错。开关热点可能断开当前连接；共享流量策略在「共享与数据面」设置。")
+            ArrowRow("修改热点设置", "名称、密码、加密方式、频段；写入系统", enabled = idle && config != null) { configureHotspot = true }
             ButtonRow {
-                ActionButton("读取状态", enabled = idle) { operate("hotspot", "读取热点状态…") { hotspot = it } }
+                ActionButton("刷新", enabled = idle) { operate("hotspot", "读取热点状态…") { hotspot = it } }
                 ActionButton("开启", enabled = idle) { confirmHotspot = true }
                 ActionButton("关闭", enabled = idle) { confirmHotspot = false }
             }
@@ -236,9 +261,12 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         confirmHotspot = null
         operate("hotspot-set", "设置热点…", json("enabled" to enabled)) { hotspot = it; notice = if (enabled) "热点已开启" else "热点已关闭" }
     }
-    HotspotDialog(configureHotspot, hotspot?.string("ssid").orEmpty(), hotspot?.string("band", "2") ?: "2", { configureHotspot = false }) { config ->
+    HotspotDialog(configureHotspot, hotspot?.get("config") as? JsonObject, { configureHotspot = false }) { config ->
         configureHotspot = false
-        operate("hotspot-set", "保存热点配置…", json("config" to config)) { hotspot = it; notice = "热点配置已保存，下次开启时应用" }
+        operate("hotspot-set", "写入系统热点设置…", json("config" to config)) {
+            hotspot = it
+            notice = if (it.boolean("enabled")) "热点设置已写入系统；部分系统需关闭再开启热点后生效" else "热点设置已写入系统"
+        }
     }
     EditDialog(editScrcpyPort, "web scrcpy 端口", session?.string("scrcpy_port", "8080") ?: "8080", summary = "指向本机已安装的 ws-scrcpy 服务，不能与 WebUI 端口相同。", onDismiss = { editScrcpyPort = false }) { value ->
         val port = value.toIntOrNull()
@@ -257,25 +285,64 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     }
 }
 
+internal fun hotspotSecurityName(type: Int): String = when (type) {
+    0 -> "开放（无密码）"
+    1 -> "WPA2-Personal"
+    2 -> "WPA2/WPA3-Personal"
+    3 -> "WPA3-Personal"
+    else -> "其它"
+}
+
+internal fun hotspotBandName(band: Int): String {
+    val names = listOfNotNull(if (band and 1 != 0) "2.4 GHz" else null, if (band and 2 != 0) "5 GHz" else null,
+        if (band and 4 != 0) "6 GHz" else null, if (band and 8 != 0) "60 GHz" else null)
+    return names.joinToString(" + ").ifEmpty { "-" }
+}
+
+private fun JsonObject.int(key: String): Int = string(key).toDoubleOrNull()?.toInt() ?: -1
+
+/** 修改系统热点设置：以系统当前配置为初值；密码留空则不改；只提交改动过的项。 */
 @Composable
-private fun HotspotDialog(show: Boolean, initialSSID: String, initialBand: String, onDismiss: () -> Unit, onSave: (JsonObject) -> Unit) {
-    var ssid by remember(show) { mutableStateOf(initialSSID) }
+private fun HotspotDialog(show: Boolean, current: JsonObject?, onDismiss: () -> Unit, onSave: (JsonObject) -> Unit) {
+    val initialSsid = current?.string("ssid").orEmpty()
+    val initialSecurity = current?.int("security")?.takeIf { it in 0..3 } ?: 1
+    val initialBand = current?.int("band") ?: 1
+    val initialHidden = current?.boolean("hidden") == true
+    val bands = listOf(1, 2, 3)
+    var ssid by remember(show) { mutableStateOf(initialSsid) }
     var password by remember(show) { mutableStateOf("") }
-    var band by remember(show) { mutableStateOf(initialBand.ifEmpty { "2" }) }
+    var security by remember(show) { mutableStateOf(initialSecurity) }
+    // 系统当前是 6 GHz 等本页不提供的频段时，默认保持不变
+    var band by remember(show) { mutableStateOf(initialBand.takeIf { it in bands } ?: 0) }
+    var hidden by remember(show) { mutableStateOf(initialHidden) }
     var error by remember(show) { mutableStateOf("") }
-    Dialog(show, "热点配置", "密码不会回显；保存配置不会立即断开热点。", onDismissRequest = onDismiss) {
+    Dialog(show, "热点设置", "写入系统热点设置；密码留空则保持不变。", onDismissRequest = onDismiss) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             InputField("热点名称", ssid) { ssid = it }
-            PasswordField("WPA2 密码", password) { password = it }
-            DropdownRow("频段", listOf("2.4 GHz", "5 GHz", "自动"), listOf("2", "5", "any").indexOf(band).coerceAtLeast(0)) { band = listOf("2", "5", "any")[it] }
+            DropdownRow("加密", listOf("WPA2-Personal", "WPA2/WPA3-Personal", "WPA3-Personal", "开放（无密码）"),
+                listOf(1, 2, 3, 0).indexOf(security).coerceAtLeast(0)) { security = listOf(1, 2, 3, 0)[it] }
+            if (security != 0) PasswordField(if (initialSecurity == 0) "密码" else "新密码（留空不变）", password) { password = it }
+            val bandOptions = (if (band == 0) listOf("保持不变（${hotspotBandName(initialBand)}）") else emptyList()) + listOf("2.4 GHz", "5 GHz", "2.4 + 5 GHz")
+            val bandValues = (if (band == 0) listOf(0) else emptyList()) + bands
+            DropdownRow("频段", bandOptions, bandValues.indexOf(band).coerceAtLeast(0)) { band = bandValues[it] }
+            SwitchRow("隐藏网络", hidden, "不广播名称，需手动输入才能连接") { hidden = it }
             if (error.isNotEmpty()) Text(error, color = Tone.danger, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton("取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-                TextButton("保存", modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
+                TextButton("写入", modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
                     error = when {
                         ssid.encodeToByteArray().size !in 1..32 || ssid.any { it == '\n' || it == '\r' || it == '\u0000' } -> "名称须为 1–32 字节"
-                        password.length !in 8..63 || password.any { it.code !in 32..126 } -> "密码须为 8–63 个 ASCII 字符"
-                        else -> { onSave(json("ssid" to ssid, "password" to password, "band" to band)); "" }
+                        password.isNotEmpty() && (password.length !in 8..63 || password.any { it.code !in 32..126 }) -> "密码须为 8–63 个 ASCII 字符"
+                        security != 0 && password.isEmpty() && initialSecurity == 0 -> "从开放改为加密需要设置密码"
+                        else -> {
+                            val changes = mutableListOf<Pair<String, Any?>>()
+                            if (ssid != initialSsid) changes += "ssid" to ssid
+                            if (security != initialSecurity || password.isNotEmpty()) changes += "security" to security
+                            if (security != 0 && password.isNotEmpty()) changes += "password" to password
+                            if (band != 0 && band != initialBand) changes += "band" to band
+                            if (hidden != initialHidden) changes += "hidden" to hidden
+                            if (changes.isEmpty()) { onDismiss(); "" } else { onSave(json(*changes.toTypedArray())); "" }
+                        }
                     }
                 })
             }

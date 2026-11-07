@@ -133,10 +133,15 @@ func (s *Server) readMessages(ctx context.Context, limit int) (map[string]any, e
 	return map[string]any{"messages": list}, nil
 }
 
+// hotspotConfig 是要写入系统的热点设置；未提供的字段保持系统当前值。
+// Security 按 SoftApConfiguration：0 开放、1 WPA2、2 WPA3 过渡（WPA2/WPA3）、3 WPA3。
+// Band 为位掩码：1 2.4 GHz、2 5 GHz、3 两者。Password 为空时沿用系统当前密码。
 type hotspotConfig struct {
-	SSID     string `json:"ssid"`
-	Password string `json:"password"`
-	Band     string `json:"band"`
+	SSID     *string `json:"ssid,omitempty"`
+	Password string  `json:"password,omitempty"`
+	Security *int    `json:"security,omitempty"`
+	Band     *int    `json:"band,omitempty"`
+	Hidden   *bool   `json:"hidden,omitempty"`
 }
 
 type hotspotRequest struct {
@@ -145,55 +150,127 @@ type hotspotRequest struct {
 }
 
 func (config hotspotConfig) validate() error {
-	if len(config.SSID) < 1 || len(config.SSID) > 32 || !utf8.ValidString(config.SSID) || strings.ContainsAny(config.SSID, "\r\n\x00") {
-		return errors.New("热点名称须为 1–32 字节，不能含换行")
-	}
-	if len(config.Password) < 8 || len(config.Password) > 63 {
-		return errors.New("WPA2 热点密码须为 8–63 个 ASCII 字符")
-	}
-	for _, character := range config.Password {
-		if character < 32 || character > 126 {
-			return errors.New("热点密码须为可打印 ASCII 字符")
+	if config.SSID != nil {
+		ssid := *config.SSID
+		if len(ssid) < 1 || len(ssid) > 32 || !utf8.ValidString(ssid) || strings.ContainsAny(ssid, "\r\n\x00") {
+			return errors.New("热点名称须为 1–32 字节，不能含换行")
 		}
 	}
-	if config.Band != "2" && config.Band != "5" && config.Band != "any" {
-		return errors.New("热点频段须为 2、5 或 any")
+	if config.Security != nil && (*config.Security < 0 || *config.Security > 3) {
+		return errors.New("加密方式无效")
+	}
+	if config.Password != "" {
+		if config.Security != nil && *config.Security == 0 {
+			return errors.New("开放热点不需要密码")
+		}
+		if len(config.Password) < 8 || len(config.Password) > 63 {
+			return errors.New("热点密码须为 8–63 个 ASCII 字符")
+		}
+		for _, character := range config.Password {
+			if character < 32 || character > 126 {
+				return errors.New("热点密码须为可打印 ASCII 字符")
+			}
+		}
+		if config.Security == nil {
+			return errors.New("修改密码时需要同时指定加密方式")
+		}
+	}
+	if config.Band != nil && *config.Band != 1 && *config.Band != 2 && *config.Band != 3 {
+		return errors.New("热点频段须为 2.4 GHz、5 GHz 或两者")
+	}
+	if config.SSID == nil && config.Security == nil && config.Band == nil && config.Hidden == nil {
+		return errors.New("没有要修改的热点设置")
 	}
 	return nil
 }
 
-func (s *Server) savedHotspot() (hotspotConfig, error) {
-	var config hotspotConfig
-	data, err := os.ReadFile(filepath.Join(s.dataDir, "webui-hotspot.json"))
-	if err != nil {
-		return config, err
-	}
-	err = json.Unmarshal(data, &config)
-	return config, err
-}
-
+// readHotspot 读取系统热点状态、系统保存的热点配置（名称、密码、加密、频段）与已连接设备。
 func (s *Server) readHotspot(ctx context.Context) (map[string]any, error) {
-	result, err := s.hotspotCommand(ctx, "status")
+	result, err := s.hotspotCommand(ctx, "status", "")
 	if err != nil {
 		return nil, err
 	}
-	config, configErr := s.savedHotspot()
-	result["configured"], result["ssid"], result["band"] = configErr == nil, config.SSID, config.Band
+	s.addHotspotClients(ctx, result)
 	return result, nil
 }
 
-func (s *Server) hotspotCommand(ctx context.Context, action string) (map[string]any, error) {
+// addHotspotClients 从热点网卡的邻居表（ip neigh）列出已连接设备，与 VPNHotspot 的做法相同。
+func (s *Server) addHotspotClients(ctx context.Context, result map[string]any) {
+	ifaces, _ := result["ifaces"].([]any)
+	clients := []map[string]any{}
+	for _, item := range ifaces {
+		iface, ok := item.(string)
+		if !ok || iface == "" || strings.ContainsAny(iface, " /\x00") {
+			continue
+		}
+		output, _, _, _, err := deviceCommand(ctx, 3*time.Second, 64<<10, "ip", "neigh", "show", "dev", iface)
+		if err != nil {
+			continue
+		}
+		clients = append(clients, parseNeighbours(output, iface)...)
+	}
+	result["clients"] = clients
+}
+
+func parseNeighbours(output, iface string) []map[string]any {
+	byMAC := map[string]map[string]any{}
+	order := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		state := fields[len(fields)-1]
+		if state == "FAILED" || state == "INCOMPLETE" || state == "NOARP" {
+			continue
+		}
+		mac := ""
+		for index := 1; index+1 < len(fields); index++ {
+			if fields[index] == "lladdr" {
+				mac = strings.ToLower(fields[index+1])
+			}
+		}
+		if mac == "" {
+			continue
+		}
+		entry, ok := byMAC[mac]
+		if !ok {
+			entry = map[string]any{"mac": mac, "iface": iface, "ipv4": "", "ipv6": []string{}, "state": state}
+			byMAC[mac] = entry
+			order = append(order, mac)
+		}
+		if strings.Contains(fields[0], ":") {
+			if !strings.HasPrefix(fields[0], "fe80:") {
+				entry["ipv6"] = append(entry["ipv6"].([]string), fields[0])
+			}
+		} else {
+			entry["ipv4"] = fields[0]
+		}
+		if state == "REACHABLE" {
+			entry["state"] = state
+		}
+	}
+	clients := make([]map[string]any, 0, len(order))
+	for _, mac := range order {
+		clients = append(clients, byMAC[mac])
+	}
+	return clients
+}
+
+func (s *Server) hotspotCommand(ctx context.Context, action, path string) (map[string]any, error) {
 	helper := filepath.Join(filepath.Dir(s.scriptDir), "bin", "device-control.jar")
 	if _, err := os.Stat(helper); err != nil {
 		return nil, errors.New("缺少设备控制桥接，请重新安装完整模块")
 	}
 	args := []string{"/system/bin", "mihomo.device.DeviceControl", action}
 	timeout := 8 * time.Second
-	if action == "start" {
-		args = append(args, filepath.Join(s.dataDir, "webui-hotspot.json"))
+	switch action {
+	case "start":
 		timeout = 22 * time.Second
-	} else if action == "stop" {
+	case "stop":
 		timeout = 10 * time.Second
+	case "config":
+		args = append(args, path)
 	}
 	output, stderr, _, truncated, err := deviceCommandEnv(ctx, timeout, 16<<10, []string{"CLASSPATH=" + helper}, "app_process", args...)
 	var result map[string]any
@@ -208,43 +285,45 @@ func (s *Server) hotspotCommand(ctx context.Context, action string) (map[string]
 	return nil, fmt.Errorf("热点操作未确认（ROM 可能不支持）：%v %s", err, strings.TrimSpace(stderr))
 }
 
+// setHotspot 修改系统热点配置（写入系统，等同于在系统设置里修改）和/或开关热点。
+// 密码经私有临时文件传给桥接，不出现在命令行参数里，用完即删。
 func (s *Server) setHotspot(ctx context.Context, body hotspotRequest) (map[string]any, error) {
-	config, err := s.savedHotspot()
-	if body.Config != nil {
-		config = *body.Config
-		if err := config.validate(); err != nil {
-			return nil, err
-		}
-		data, _ := json.Marshal(config)
-		if err := writePrivateFile(filepath.Join(s.dataDir, "webui-hotspot.json"), data); err != nil {
-			return nil, err
-		}
-		err = nil
-	}
 	if body.Enabled == nil && body.Config == nil {
 		return nil, errors.New("缺少热点配置或开关")
 	}
-	if body.Enabled != nil {
-		if *body.Enabled {
-			if err != nil {
-				return nil, errors.New("请先保存热点名称、WPA2 密码和频段")
-			}
-			if err := config.validate(); err != nil {
-				return nil, err
-			}
+	var result map[string]any
+	if body.Config != nil {
+		if err := body.Config.validate(); err != nil {
+			return nil, err
 		}
+		data, _ := json.Marshal(body.Config)
+		path := filepath.Join(s.dataDir, "run", "webui-hotspot.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		if err := writePrivateFile(path, data); err != nil {
+			return nil, err
+		}
+		saved, err := s.hotspotCommand(ctx, "config", path)
+		_ = os.Remove(path)
+		if err != nil {
+			return nil, err
+		}
+		result = saved
+	}
+	if body.Enabled != nil {
 		action := "stop"
 		if *body.Enabled {
 			action = "start"
 		}
-		result, err := s.hotspotCommand(ctx, action)
+		changed, err := s.hotspotCommand(ctx, action, "")
 		if err != nil {
 			return nil, err
 		}
-		result["configured"], result["ssid"], result["band"] = config.SSID != "", config.SSID, config.Band
-		return result, nil
+		result = changed
 	}
-	return map[string]any{"submitted": body.Enabled != nil, "configured": true, "ssid": config.SSID, "band": config.Band}, nil
+	s.addHotspotClients(ctx, result)
+	return result, nil
 }
 
 func writePrivateFile(path string, data []byte) error {
