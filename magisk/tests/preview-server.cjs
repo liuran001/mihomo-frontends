@@ -49,6 +49,7 @@ function mockBackend() {
   let operationPassword = 'operation-password';
   let operationUnlocked = false;
   let screenRunning = false;
+  let coreVersion = 'alpha-smart-e272b9d-ebpf';
   let hotspot = { ok: true, enabled: false, tethered: false, configured: false, ssid: '', band: '2' };
   if (previewMode.has('enhanced')) {
     webui.enabled = true;
@@ -81,10 +82,14 @@ function mockBackend() {
       case 'status': result = { ok: true, running, pid: running ? 2471 : null, rss_kb: running ? 46336 : 0, uptime: running ? 7384 : null,
         desired: 'manual', allowed: true, current_ssid: policy.current_ssid }; break;
       case 'service': running = payload.action !== 'stop'; break;
-      case 'coreInfo': result = { ok: true, installed, version: installed ? 'alpha-smart-e272b9d' : '', can_rollback: !fresh }; break;
+      case 'coreInfo': result = { ok: true, installed, version: installed ? 'Mihomo Meta ' + coreVersion + ' android arm64 with go1.26.0 2026-08-20T17:00:00Z' : '', can_rollback: !fresh }; break;
       case 'coreGetSet': result = { ok: true, repo: 'liuran001/mihomo', tag: 'Prerelease-Alpha', mirror: 'https://ghfast.top/' }; break;
       case 'coreSet': break;
-      case 'coreUpdate': await sleep(1200); installed = true; result = { ok: true, version: 'alpha-smart-e272b9d' }; break;
+      case 'coreCheck': await sleep(600); result = { ok: true, latest: 'alpha-smart-0cc66a1-ebpf', tag: 'Prerelease-Alpha', current: installed ? coreVersion : '', update_available: !installed || coreVersion !== 'alpha-smart-0cc66a1-ebpf' }; break;
+      case 'coreUpdate':
+        await sleep(1200);
+        if (installed && !payload.force && coreVersion === 'alpha-smart-0cc66a1-ebpf') { result = { ok: true, unchanged: true, version: coreVersion, tag: 'Prerelease-Alpha' }; break; }
+        installed = true; coreVersion = 'alpha-smart-0cc66a1-ebpf'; result = { ok: true, version: coreVersion, tag: 'Prerelease-Alpha' }; break;
       case 'configRead': result = { ok: true, content: config, exists: !!config }; break;
       case 'validate': result = { ok: true, valid: true, output: 'configuration file test is successful' }; break;
       case 'apply': config = payload.content || config; result = { ok: true, restarted: running }; break;

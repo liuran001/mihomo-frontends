@@ -42,13 +42,20 @@ select_asset() {
     grep -vE '\.(sha256|txt|zip|xz|deb|rpm|apk)$' | head -n 1
 }
 
-check_core() {
-  core_version=$("$1" -v 2>&1) || return 1
-  printf '%s\n' "$core_version" | grep -q ' android '
+# 从资源文件名取版本：mihomo-android-arm64-v8-alpha-smart-0cc66a1-ebpf.gz → alpha-smart-0cc66a1-ebpf
+release_version() {
+  name=${1##*/}; name=${name%.gz}
+  name=${name#mihomo-"$2"}; name=${name#-v8}; name=${name#-}
+  printf '%s' "$name"
 }
 
-download() {
-  # $1 force
+installed_version() {
+  [ -x "$BIN" ] || return 0
+  "$BIN" -v 2>/dev/null | head -n 1 | sed 's/.*Mihomo Meta \([^ ]*\).*/\1/'
+}
+
+# 查最新 release：设置 tag、url、version；失败时输出 JSON 错误并返回 1
+resolve_release() {
   command -v curl >/dev/null 2>&1 || { echo '{"ok":false,"error":"缺少 curl，请安装提供 curl 的模块后重试"}'; return 1; }
   asset=$(abi_asset) || { echo '{"ok":false,"error":"不支持的架构"}'; return 1; }
   ensure_dirs
@@ -60,6 +67,32 @@ download() {
   if [ -z "$url" ]; then
     printf '{"ok":false,"error":"release %s 中没有 %s 架构的内核"}\n' "$(json_escape "$tag")" "$asset"
     return 1
+  fi
+  version=$(release_version "$url" "$asset")
+}
+
+# 只查版本，不下载内核
+check() {
+  resolve_release || return 1
+  current=$(installed_version)
+  update=true
+  [ -n "$current" ] && [ "$current" = "$version" ] && update=false
+  printf '{"ok":true,"latest":"%s","tag":"%s","current":"%s","update_available":%s}\n' \
+    "$(json_escape "$version")" "$(json_escape "$tag")" "$(json_escape "$current")" "$update"
+}
+
+check_core() {
+  core_version=$("$1" -v 2>&1) || return 1
+  printf '%s\n' "$core_version" | grep -q ' android '
+}
+
+download() {
+  # $1 为 force 时即使版本相同也重新下载
+  resolve_release || return 1
+  current=$(installed_version)
+  if [ "${1:-}" != force ] && [ -n "$version" ] && [ "$current" = "$version" ]; then
+    printf '{"ok":true,"unchanged":true,"version":"%s","tag":"%s"}\n' "$(json_escape "$current")" "$(json_escape "$tag")"
+    return 0
   fi
   mirror=$(core_mirror)
   dl="$url"
@@ -128,7 +161,8 @@ rollback() {
 }
 
 case "$1" in
-  download) download ;;
+  check)    check ;;
+  download) download "$2" ;;
   info)     info ;;
   rollback) rollback ;;
   settings)

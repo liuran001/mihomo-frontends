@@ -198,6 +198,8 @@ private object ToolsCore {
     val work = ToolsWork()
     var attempted by mutableStateOf(false)
     var info by mutableStateOf<JsonObject?>(null)
+    /** 最近一次检查更新的结果（core.sh check）；切换下载来源后作废。 */
+    var latest by mutableStateOf<JsonObject?>(null)
     var settingsLoaded by mutableStateOf(false)
     var repo by mutableStateOf(toolsDefaultRepo)
     var tag by mutableStateOf("")
@@ -234,11 +236,30 @@ private object ToolsCore {
         status = ""
     }
 
-    fun download() = work.run("下载并安装内核中…", download = true) {
-        val result = request("coreUpdate")
-        val success = "内核已安装 ${result.string("version").ifBlank { result.string("tag") }}。重启服务后使用新内核。"
+    /** 只查最新版本，不下载内核。 */
+    fun check() = work.run("检查更新中…") {
+        val result = request("coreCheck")
+        latest = result
+        status = when {
+            result.string("latest").isBlank() -> "最新 release 的文件名里没有版本号，无法比较；可直接更新"
+            result.boolean("update_available") -> "有新版本 ${result.string("latest")}"
+            else -> "已是最新版本（${result.string("latest")}）"
+        }
+    }
+
+    /** force：版本相同也重新下载安装。 */
+    fun download(force: Boolean = false) = work.run(if (force) "重新下载并安装内核中…" else "下载并安装内核中…", download = true) {
+        val result = request("coreUpdate", json("force" to force))
+        val version = result.string("version").ifBlank { result.string("tag") }
+        if (result.boolean("unchanged")) {
+            latest = json("latest" to version, "current" to version, "update_available" to false)
+            status = "已是最新版本（$version），未重新下载"
+            return@run
+        }
+        val success = "内核已安装 $version。重启服务后使用新内核。"
         status = "$success 正在刷新内核信息…"
         info = request("coreInfo")
+        latest = json("latest" to version, "current" to version, "update_available" to false)
         status = success
     }
 
@@ -253,6 +274,7 @@ private object ToolsCore {
         this@ToolsCore.tag = tag
         this@ToolsCore.mirror = mirror
         savedSettings = listOf(repo, tag, mirror)
+        latest = null
         status = "下载来源已保存"
     }
 }
@@ -444,10 +466,31 @@ fun CorePage(onBack: () -> Unit) {
                 if (with >= 0 && with + 1 < words.size) InfoRow("构建", words.subList(with + 1, words.size).joinToString(" "))
             }
         }
+        val installed = info?.boolean("installed") == true
+        val latest = state.latest
+        if (installed && latest != null) group("更新") {
+            val newest = latest.string("latest")
+            InfoRow("最新版本", newest.ifBlank { "无法识别" },
+                valueColor = if (latest.boolean("update_available")) Tone.warning else Tone.success)
+            Caption(if (latest.boolean("update_available")) "有新版本，更新后重启服务即可使用" else "当前已是最新版本")
+        }
         item(key = "actions") {
+            val ready = toolsIdle && !state.settingsDirty
             ButtonRow {
-                ActionButton(if (info?.boolean("installed") == true) "检查更新并安装" else "下载内核", primary = true,
-                    enabled = toolsIdle && !state.settingsDirty) { state.download() }
+                when {
+                    // 未安装：直接下载
+                    !installed -> ActionButton("下载并安装", primary = true, enabled = ready) { state.download() }
+                    // 还没检查：先检查，不下载
+                    latest == null -> ActionButton("检查更新", primary = true, enabled = ready) { state.check() }
+                    latest.boolean("update_available") -> {
+                        ActionButton("重新检查", enabled = ready) { state.check() }
+                        ActionButton("更新", primary = true, enabled = ready) { state.download() }
+                    }
+                    else -> {
+                        ActionButton("重新检查", enabled = ready) { state.check() }
+                        ActionButton("重新安装", enabled = ready) { state.download(force = true) }
+                    }
+                }
                 if (info?.boolean("can_rollback") == true) ActionButton("回滚", enabled = toolsIdle) { confirmRollback = true }
             }
         }
@@ -487,6 +530,7 @@ fun CorePage(onBack: () -> Unit) {
         confirmRollback = false
         state.work.run("回滚内核中…") {
             request("coreRollback")
+            state.latest = null
             state.info = request("coreInfo")
             status = "已回滚，重启服务后生效"
         }

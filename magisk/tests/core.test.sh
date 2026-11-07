@@ -34,6 +34,24 @@ printf '#!/bin/sh\necho "Mihomo Meta test linux arm64 with go1.27"\n' > "$TEST_D
 chmod 755 "$TEST_DIR/android" "$TEST_DIR/linux"
 check_core "$TEST_DIR/android"
 if check_core "$TEST_DIR/linux"; then echo 'Linux core must be rejected' >&2; exit 1; fi
+assert_equal "$(release_version https://example.org/mihomo-android-arm64-v8-alpha-smart-0cc66a1-ebpf.gz android-arm64)" alpha-smart-0cc66a1-ebpf
+assert_equal "$(release_version https://example.org/mihomo-android-amd64-alpha-smart-0cc66a1-ebpf.gz android-amd64)" alpha-smart-0cc66a1-ebpf
+assert_equal "$(release_version https://example.org/mihomo-android-arm64-v8-v1.19.0.gz android-arm64)" v1.19.0
+# check 与 download 的同版本判断（不联网：替换取 release 与下载）
+uname() { echo aarch64; }
+core_tag() { echo ''; }
+RUN_DIR=$TEST_DIR/run; mkdir -p "$RUN_DIR"
+ensure_dirs() { :; }
+json_escape() { printf '%s' "$1"; }
+latest_json() { echo '{"tag_name":"Prerelease-Alpha","assets":[{"browser_download_url":"https://example.org/mihomo-android-arm64-v8-alpha-new-ebpf.gz"}]}'; }
+BIN=$TEST_DIR/installed
+printf '#!/bin/sh\necho "Mihomo Meta alpha-old-ebpf android arm64 with go1.27"\n' >"$BIN"; chmod 755 "$BIN"
+assert_equal "$(check)" '{"ok":true,"latest":"alpha-new-ebpf","tag":"Prerelease-Alpha","current":"alpha-old-ebpf","update_available":true}'
+printf '#!/bin/sh\necho "Mihomo Meta alpha-new-ebpf android arm64 with go1.27"\n' >"$BIN"
+assert_equal "$(check)" '{"ok":true,"latest":"alpha-new-ebpf","tag":"Prerelease-Alpha","current":"alpha-new-ebpf","update_available":false}'
+assert_equal "$(download)" '{"ok":true,"unchanged":true,"version":"alpha-new-ebpf","tag":"Prerelease-Alpha"}'
+rm -f "$BIN"
+assert_equal "$(check)" '{"ok":true,"latest":"alpha-new-ebpf","tag":"Prerelease-Alpha","current":"","update_available":true}'
 printf 'core tests passed\n'
 
 # 安装预设：首次写入默认值，已有设置保持不变。

@@ -808,12 +808,15 @@
   const noValidation = () => {};
   for (const [name, command, timeout] of [
     ['status', 'mihomo.sh status'], ['coreGetSet', 'core.sh get_settings'],
-    ['coreUpdate', 'core.sh download', 1320000], ['coreRollback', 'core.sh rollback'],
+    ['coreCheck', 'core.sh check', 90000], ['coreRollback', 'core.sh rollback'],
     ['backups', 'backup.sh list'], ['policyGet', 'policy.sh get'],
     ['discoveryInterfaces', 'discovery.sh interfaces', 15000],
     ['onboardingState', 'onboarding.sh get'], ['onboardingComplete', 'onboarding.sh complete'],
   ]) register(name, [], noValidation, () => shJson(command.split(' ')[0], command.split(' ').slice(1), timeout));
 
+  // force：版本相同也重新下载（默认同版本直接返回 unchanged）
+  register('coreUpdate', ['force'], (payload) => boolean(payload.force, 'force', true),
+    (payload) => shJson('core.sh', payload.force === true ? ['download', 'force'] : ['download'], 1320000));
   register('service', ['action'], (payload) => oneOf(payload.action, ['start', 'stop', 'restart'], '服务操作'), (payload) => service(payload.action));
   register('coreInfo', [], noValidation, async () => {
     const info = await shJson('core.sh', ['info']);
