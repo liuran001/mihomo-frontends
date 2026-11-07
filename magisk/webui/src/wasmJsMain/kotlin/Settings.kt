@@ -1,6 +1,8 @@
 package mihomo
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -570,7 +572,9 @@ private fun SettingsInterfaceSheet(state: SettingsState) {
             val selected = draft?.interfaceNames().orEmpty()
             val known = state.interfaces.filter { !it.upstream }
             val names = (selected + known.map { it.name } + settingsDefaultInterfaces).distinct()
-            Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
+            // 网卡多时列表在弹窗内滚动，底部说明保持可见
+            Card(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
                 for (name in names) {
                     val info = known.firstOrNull { it.name == name }
                     val summary = listOfNotNull(
@@ -595,7 +599,8 @@ private fun SettingsSsidSheet(state: SettingsState, onAdd: () -> Unit) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             val ssids = draft?.ssids?.settingsLines()?.split('\n').orEmpty()
             state.ssidError?.let { Banner(it, BannerKind.Error) }
-            Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
+            Card(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
                 ssids.forEachIndexed { index, ssid ->
                     if (ssid.isNotEmpty()) BasicComponent(title = ssid, endActions = {
                         IconButton(onClick = { state.removeSsid(index) }, enabled = state.editable) {

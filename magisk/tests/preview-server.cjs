@@ -79,6 +79,10 @@ function mockBackend() {
         { name: 'ap0', kind: 'wifi', present: true, state: 'up', upstream: false, suggested: true },
         { name: 'wlan0', kind: 'wifi', present: true, state: 'up', upstream: true, suggested: false },
         { name: 'rndis0', kind: 'usb', present: false, state: 'down', upstream: false, suggested: true },
+        // 网卡较多时弹窗需要能滚动
+        ...['eth0', 'eth1', 'usb1', 'bt-pan', 'wlan2', 'swlan0', 'ncm0', 'p2p0', 'ap1', 'rmnet_data0', 'v4-rmnet_data1', 'dummy0']
+          .map((name, i) => ({ name, kind: /^eth/.test(name) ? 'ethernet' : /^bt/.test(name) ? 'bluetooth' : /^(usb|ncm)/.test(name) ? 'usb' : 'wifi',
+            present: true, state: i % 2 ? 'down' : 'up', upstream: false, suggested: false })),
       ] }; break;
       case 'status': result = { ok: true, running, pid: running ? 2471 : null, rss_kb: running ? 46336 : 0, uptime: running ? 7384 : null,
         desired: 'manual', allowed: true, current_ssid: policy.current_ssid }; break;
