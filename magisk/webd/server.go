@@ -640,33 +640,50 @@ func acceptsGzip(value string) bool {
 }
 
 // listen 打开 TCP 与 unix socket 监听，并把来源写进请求上下文。
-func (s *Server) listen(ctx context.Context, socketPath string) error {
-	defer s.shutdownScrcpy()
-	config := s.currentConfig()
+// tcpAddress 是设置里的监听地址：局域网访问时监听所有地址，否则只监听本机
+func tcpAddress(config Config) (string, string) {
 	host := "127.0.0.1"
 	if config.LAN {
 		host = "::"
 	}
-	tcp, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(config.Port)))
+	return host, strconv.Itoa(config.Port)
+}
+
+func listenTCP(config Config) (net.Listener, error) {
+	host, port := tcpAddress(config)
+	tcp, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil && host == "::" {
-		tcp, err = net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(config.Port)))
+		tcp, err = net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
 	}
+	return tcp, err
+}
+
+// configPollInterval 是检查 webui.json 的间隔：端口、局域网监听变化时换地址，关闭网页管理时退出
+var configPollInterval = time.Second
+
+func (s *Server) listen(ctx context.Context, socketPath string) error {
+	defer s.shutdownScrcpy()
+	config := s.currentConfig()
+	tcp, err := listenTCP(config)
 	if err != nil {
 		return err
 	}
 	handler := s.Handler()
-	servers := []*http.Server{{
-		Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
-		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
-			addr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
-			who := caller{origin: originLAN, addr: addr.Addr().Unmap()}
-			if who.addr.IsLoopback() {
-				who.origin = originLocal
-			}
-			return context.WithValue(ctx, contextKey{}, who)
-		},
-	}}
-	listeners := []net.Listener{tcp}
+	newTCPServer := func() *http.Server {
+		return &http.Server{
+			Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+			ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+				addr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+				who := caller{origin: originLAN, addr: addr.Addr().Unmap()}
+				if who.addr.IsLoopback() {
+					who.origin = originLocal
+				}
+				return context.WithValue(ctx, contextKey{}, who)
+			},
+		}
+	}
+	var servers []*http.Server
+	var listeners []net.Listener
 	managerPath := filepath.Join(s.dataDir, "run", "webui-manager.sock")
 	if err := os.MkdirAll(filepath.Dir(managerPath), 0o700); err != nil {
 		tcp.Close()
@@ -715,14 +732,91 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 		})
 	}
 	log.Printf("listening on %s (unix %q)", tcp.Addr(), socketPath)
-	errs := make(chan error, len(servers))
+	errs := make(chan error, len(servers)+1)
 	for index, server := range servers {
 		go func(server *http.Server, listener net.Listener) { errs <- server.Serve(listener) }(server, listeners[index])
 	}
+	// 局域网 / 本机的 TCP 服务单独管理：换端口时先在新地址监听，再关闭旧的（连同旧端口上的连接）
+	var tcpMu sync.Mutex
+	tcpServer := newTCPServer()
+	serveTCP := func(server *http.Server, listener net.Listener) {
+		go func() {
+			err := server.Serve(listener)
+			tcpMu.Lock()
+			current := server == tcpServer
+			tcpMu.Unlock()
+			if current {
+				errs <- err
+			}
+		}()
+	}
+	serveTCP(tcpServer, tcp)
+	// 旧地址上正在处理的请求（例如保存设置的这次请求）先做完再关
+	retire := func(server *http.Server) {
+		go func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if server.Shutdown(shutdownCtx) != nil {
+				server.Close()
+			}
+		}()
+	}
+	disabled := make(chan struct{})
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		bound := config
+		ticker := time.NewTicker(configPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-ticker.C:
+			}
+			if s.reload() != nil {
+				continue
+			}
+			s.mu.Lock()
+			next := s.config
+			s.mu.Unlock()
+			if !next.Enabled {
+				log.Printf("网页管理已关闭，退出")
+				close(disabled)
+				return
+			}
+			if next.Port == bound.Port && next.LAN == bound.LAN {
+				continue
+			}
+			listener, err := listenTCP(next)
+			if err != nil {
+				host, port := tcpAddress(bound)
+				log.Printf("改用新地址失败，继续使用 %s：%v", net.JoinHostPort(host, port), err)
+				bound = next // 不反复重试同一个地址；设置再变时重新尝试
+				continue
+			}
+			server := newTCPServer()
+			tcpMu.Lock()
+			old := tcpServer
+			tcpServer = server
+			tcpMu.Unlock()
+			serveTCP(server, listener)
+			retire(old)
+			bound = next
+			log.Printf("listening on %s", listener.Addr())
+		}
+	}()
 	select {
 	case <-ctx.Done():
+	case <-disabled:
+		err = nil
 	case err = <-errs:
 	}
+	tcpMu.Lock()
+	last := tcpServer
+	tcpServer = nil
+	tcpMu.Unlock()
+	_ = last.Close()
 	for _, server := range servers {
 		_ = server.Close()
 	}

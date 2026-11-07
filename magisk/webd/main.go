@@ -5,6 +5,7 @@
 //	mihomo-webd set    -c CONF B64JSON    更新设置（只接受已知字段，不改密码）
 //	mihomo-webd passwd -c CONF B64        设置密码；空串清除密码
 //	mihomo-webd addrs                     输出本机可用于访问的地址
+//	mihomo-webd enabled -c CONF           网页管理已启用时退出码为 0（不输出）
 //	mihomo-webd core|module|tailscale|net|release …   模块脚本转发的工具子命令，见 tools.go
 //
 // 子命令的输出都是一行 JSON：{"ok":true,...} 或 {"ok":false,"error":"..."}。
@@ -98,6 +99,13 @@ func main() {
 		emit(response)
 	case "addrs":
 		emit(map[string]any{"ok": true, "addrs": localAddrs()})
+	case "enabled":
+		// 网页管理是否启用：退出码 0 为启用。脚本不要自己 grep webui.json，增强功能里也有 enabled 字段
+		config, err := loadConfig(*configPath)
+		if err != nil || !config.Enabled {
+			os.Exit(1)
+		}
+		os.Exit(0)
 	default:
 		fail(fmt.Errorf("未知子命令 %s", os.Args[1]))
 	}
@@ -152,6 +160,11 @@ func setConfig(path, encoded string) error {
 			}
 		}
 		assign(&config.Enabled, patch.Enabled)
+		// 增强功能依赖网页管理服务：关闭网页管理时一并关闭（开启增强功能时也会打开网页管理）
+		if !config.Enabled {
+			config.Enhanced.Enabled = false
+			config.Enhanced.Scrcpy = false
+		}
 		assign(&config.LAN, patch.LAN)
 		assign(&config.RequirePassword, patch.RequirePassword)
 		assign(&config.Tailscale, patch.Tailscale)

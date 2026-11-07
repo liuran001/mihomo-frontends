@@ -90,7 +90,7 @@ sh "$CUR/service.sh" </dev/null >/dev/null 2>&1
 log '已启动新版本的后台进程'
 
 # 核对：启用了网页管理的，等它起来
-if grep -q '"enabled": *true' "${MIHOMO_DATA:-/data/adb/mihomo}/webui.json" 2>/dev/null; then
+if "$CUR/bin/mihomo-webd" enabled -c "${MIHOMO_DATA:-/data/adb/mihomo}/webui.json" 2>/dev/null; then
   n=0
   until sh "$CUR/scripts/webui.sh" status 2>/dev/null | grep -q '"running":true'; do
     n=$((n + 1))

@@ -18,8 +18,9 @@ webd_alive() {
   [ -z "$extra" ] && webd_matches "$webd_pid" "$webd_ticks"
 }
 
+# 只看顶层的 enabled（增强功能里也有同名字段，不能 grep），由 mihomo-webd 判断
 webd_enabled() {
-  [ -f "$WEBD_CONF" ] && grep -q '"enabled": *true' "$WEBD_CONF"
+  [ -f "$WEBD_CONF" ] && [ -x "$WEBD" ] && "$WEBD" enabled -c "$WEBD_CONF" 2>/dev/null
 }
 
 webd_stop() {

@@ -114,6 +114,7 @@ printf '%s ' "$cmd" "$@" >>"$TEST_DIR/webd-calls"; echo >>"$TEST_DIR/webd-calls"
 case "$cmd" in
   get) printf '{"ok":true,"enabled":false,"port":9099,"addrs":[]}\n' ;;
   set|passwd) printf '{"ok":true}\n' ;;
+  enabled) exit 1 ;;
 esac
 EOF
 chmod +x "$MODDIR/bin/mihomo-webd"
