@@ -597,6 +597,8 @@ const BASIC_FIELDS = [
 	['geox-url.geoip', ['geox-url', 'geoip'], (v) => C.url(v)],
 	['geox-url.geosite', ['geox-url', 'geosite'], (v) => C.url(v)],
 	['geox-url.mmdb', ['geox-url', 'mmdb'], (v) => C.url(v)],
+	['geo-auto-update', ['geo-auto-update'], (v) => C.bool(v)],
+	['geodata-loader', ['geodata-loader'], (v) => C.oneof(v, ['standard', 'memconservative'])],
 	['profile.store-selected', ['profile', 'store-selected'], (v) => C.bool(v)]
 ];
 const REQUIRED_BASIC = ['external-controller'];
@@ -641,7 +643,7 @@ function sec_dns(ctx) {
 	return out;
 }
 
-const TS_FIELDS = ['hostname', 'auth-key', 'udp', 'accept-routes', 'advertise-routes', 'advertise-exit-node', 'listen-port', 'serve'];
+const TS_FIELDS = ['hostname', 'auth-key', 'udp', 'accept-routes', 'exit-node', 'advertise-routes', 'advertise-exit-node', 'listen-port', 'serve'];
 
 function ts_index(x, name) {
 	for (let i, p in arr(x.proxies))
@@ -1345,6 +1347,8 @@ const TS_SPEC = {
 	hostname: (v) => (type(v) == 'string' && match(v, /^[A-Za-z0-9-]{1,63}$/)) ? v : null,
 	'auth-key': (v) => (C.text(v, 256) && index(v, ' ') < 0) ? C.text(v, 256) : null,
 	udp: (v) => C.bool(v), 'accept-routes': (v) => C.bool(v), 'advertise-exit-node': (v) => C.bool(v),
+	// 经 Tailnet 里的这台设备上网：节点名或 IP
+	'exit-node': (v) => (C.text(v, 253) != null && index(v, ' ') < 0) ? C.text(v, 253) : null,
 	'advertise-routes': (v) => C.list(v, C.cidr, 64), 'listen-port': (v) => C.port0(v),
 	serve: serve_list
 };
@@ -1358,7 +1362,7 @@ function op_tailscale_set(op, ctx) {
 		return r;
 	let vals = r.vals;
 	for (let k, v in vals)
-		if ((type(v) == 'array' && !length(v)) || (k == 'listen-port' && v === 0))
+		if ((type(v) == 'array' && !length(v)) || (k == 'listen-port' && v === 0) || (k == 'exit-node' && v === ''))
 			vals[k] = null;
 	return map_edits(['proxies', i], ctx.x.proxies[i], arr(ctx.raw.proxies)[i]?.keys ?? [], vals);
 }

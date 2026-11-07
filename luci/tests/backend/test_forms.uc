@@ -268,6 +268,11 @@ ok(valid(), 'basic.set 后 -t 通过');
 ok(run([{ op: 'basic.set', data: { 'external-controller': '' } }]).error, '控制器不能为空');
 ok(run([{ op: 'basic.set', data: { 'bind-address': 'x' } }]).error, '拒绝非法监听地址');
 ok(run([{ op: 'basic.set', data: { 'log-level': 'verbose' } }]).error, '拒绝非法日志级别');
+r = run([{ op: 'basic.set', data: { 'geodata-loader': 'memconservative', 'geo-auto-update': true } }]);
+x = X();
+eq([r.error, x['geodata-loader'], x['geo-auto-update']], [null, 'memconservative', true], 'basic.set：GEO 加载方式与自动更新');
+ok(valid(), 'GEO 设置修改后 -t 通过');
+ok(run([{ op: 'basic.set', data: { 'geodata-loader': 'fast' } }]).error, '拒绝非法 GEO 加载方式');
 
 r = run([{ op: 'dns.set', data: { 'enhanced-mode': 'fake-ip', 'proxy-server-nameserver': [], 'nameserver-policy': [
 	{ key: '+.lan.example', servers: ['223.5.5.5'] }, { key: 'rule-set:AWAvenue-Ads', servers: ['rcode://success'] }] } }]);
@@ -285,6 +290,11 @@ x = X().proxies[1];
 eq([r.error, x.hostname, x['listen-port'], x['advertise-routes'], x['auth-key']], [null, 'new-node', null, ['192.168.77.0/24'], 'tskey-test-123'], 'tailscale.set');
 ok(index(fs.readfile(tmp), '# 不要填写 dialer-proxy') >= 0, '保留代理里的注释');
 ok(run([{ op: 'tailscale.set', name: 'TS-Server', data: { hostname: 'a b' } }]).error, '拒绝非法主机名');
+r = run([{ op: 'tailscale.set', name: 'TS-Server', data: { 'exit-node': '100.64.0.9' } }]);
+eq([r.error, X().proxies[1]['exit-node']], [null, '100.64.0.9'], 'tailscale.set：出口节点');
+r = run([{ op: 'tailscale.set', name: 'TS-Server', data: { 'exit-node': '' } }]);
+eq([r.error, X().proxies[1]['exit-node']], [null, null], '出口节点留空时删除字段');
+ok(run([{ op: 'tailscale.set', name: 'TS-Server', data: { 'exit-node': 'a b' } }]).error, '拒绝含空格的出口节点');
 ok(run([{ op: 'tailscale.set', name: 'Nope', data: {} }]).error, '拒绝不存在的 Tailscale 代理');
 
 // serve 端口转发：规整结尾的 /，拒绝重复端口、域名目标；空列表删除字段

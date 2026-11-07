@@ -333,6 +333,20 @@ test('tailscale add rejects bad names, duplicates and hostnames', () => {
   assert.throws(() => C.patch(rendered, [{ op: 'tailscale.add', name: 'TS', values: {} }]), /设备名不能为空/);
 });
 
+test('patch edits the IPv6 FakeIP range and shared-device bypass lists (aligned with LuCI)', () => {
+  const data = plain(C.patch(rendered, [
+    { op: 'set', path: ['dns', 'fake-ip-range6'], value: 'fdfe:dcba:9876::1/64' },
+    { op: 'set', path: ['@listener', 'shared', 'bypass-exclude'], value: ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'] },
+    { op: 'set', path: ['@listener', 'shared', 'bypass-port'], value: ['22', '3389'] },
+  ]).content);
+  assert.equal(data.dns['fake-ip-range6'], 'fdfe:dcba:9876::1/64');
+  assert.deepEqual(data.listeners[0].shared['bypass-exclude'], ['100.64.0.0/10', 'fd7a:115c:a1e0::/48']);
+  assert.deepEqual(data.listeners[0].shared['bypass-port'], [22, 3389]);
+  assert.throws(() => C.patch(rendered, [{ op: 'set', path: ['@listener', 'shared', 'bypass-port'], value: '70000' }]), /端口/);
+  const ids = C.schema(rendered).sections.flatMap((section) => section.fields.map((field) => field.id));
+  for (const id of ['fake-ip-range6', 'shared.bypass-exclude', 'shared.bypass-port']) assert.ok(ids.some((x) => x.endsWith(id)), id);
+});
+
 test('tailscale set edits fields; delete removes rules, group members and bypass-exclude', () => {
   const config = [
     'proxies:',
@@ -356,6 +370,8 @@ test('tailscale set edits fields; delete removes rules, group members and bypass
   ].join('\n');
   const edited = plain(C.patch(config, [{ op: 'tailscale.set', name: 'TS', values: { hostname: 'new-node', 'auth-key': '', 'accept-routes': true } }]).content);
   assert.deepEqual([edited.proxies[0].hostname, edited.proxies[0]['auth-key'], edited.proxies[0]['accept-routes']], ['new-node', undefined, true]);
+  const exit = plain(C.patch(config, [{ op: 'tailscale.set', name: 'TS', values: { 'advertise-exit-node': true } }]).content);
+  assert.equal(exit.proxies[0]['advertise-exit-node'], true);
   assert.throws(() => C.patch(config, [{ op: 'tailscale.set', name: 'Nope', values: {} }]), /不存在/);
   const removed = plain(C.patch(config, [{ op: 'tailscale.delete', name: 'TS' }]).content);
   assert.deepEqual(removed.proxies, []);

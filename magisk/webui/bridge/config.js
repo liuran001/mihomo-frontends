@@ -216,6 +216,7 @@
         { path: ['dns', 'enhanced-mode'], label: '模式', summary: 'fake-ip：返回假地址，连接时才按域名分流，速度快；redir-host：返回真实地址，兼容性好', type: 'enum', options: [['redir-host', 'redir-host'], ['fake-ip', 'fake-ip'], ['normal', 'normal']], def: 'redir-host' },
         { path: ['dns', 'ipv6'], label: '返回 IPv6 地址（AAAA）', summary: '关闭后对 AAAA 查询返回空，避免没有 IPv6 出口时连接变慢', type: 'bool', def: false },
         { path: ['dns', 'fake-ip-range'], label: 'FakeIP 地址段（IPv4）', summary: 'fake-ip 模式分配假地址用的网段，不要和局域网冲突', type: 'text', placeholder: '198.18.0.1/16' },
+        { path: ['dns', 'fake-ip-range6'], label: 'FakeIP 地址段（IPv6）', summary: 'fake-ip 模式给 AAAA 查询分配假地址用的网段；留空不分配 IPv6 假地址', type: 'text', placeholder: 'fdfe:dcba:9876::1/64' },
         { path: ['dns', 'default-nameserver'], label: '引导服务器', summary: '用于解析其它 DNS 服务器的域名', type: 'list', limit: 32 },
         { path: ['dns', 'nameserver'], label: '默认服务器', summary: '未被下面两项覆盖的域名用这里的服务器解析', type: 'list', limit: 32 },
         { path: ['dns', 'proxy-server-nameserver'], label: '代理节点域名的服务器', summary: '只用于解析代理节点自身的域名，避免依赖代理才能解析', type: 'list', limit: 32 },
@@ -240,6 +241,8 @@
         { path: [L, 'shared', 'dns-mode'], label: '共享设备的 DNS', summary: '接管：设备的域名查询都交给 mihomo（推荐，分流才准）；按规则：由分流规则决定；不处理：设备自己查询', type: 'enum', options: [['hijack', '接管（推荐）'], ['respect_policy', '按规则'], ['off', '不处理']], def: 'hijack' },
         { path: [L, 'shared', 'ipv6'], label: '共享设备的 IPv6 也走代理', summary: '关闭后共享设备的 IPv6 连接直接上网', type: 'bool', def: true },
         { path: [L, 'shared', 'bypass-private-address'], label: '局域网地址不走代理', summary: '共享设备访问局域网地址时直接连接', type: 'bool', def: true },
+        { path: [L, 'shared', 'bypass-exclude'], label: '例外：这些地址仍走 mihomo', summary: '即使属于局域网地址，共享设备访问这些网段时仍交给 mihomo', type: 'list', item: 'cidr', limit: 256 },
+        { path: [L, 'shared', 'bypass-port'], label: '这些端口不走代理', summary: '共享设备访问这些目标端口时直接连接', type: 'list', item: 'port', limit: 256 },
         { path: [L, 'shared', 'include-mac-address'], label: '只代理这些设备（MAC）', summary: '填了以后只有这些设备走代理', type: 'list', item: 'mac', limit: 256 },
         { path: [L, 'shared', 'exclude-mac-address'], label: '不代理这些设备（MAC）', summary: '这些设备的流量不走代理', type: 'list', item: 'mac', limit: 256 },
         { path: [L, 'shared', 'include-source-cidr'], label: '只代理这些来源地址', summary: '填了以后只有这些来源地址走代理', type: 'list', item: 'cidr', limit: 256 },
@@ -274,6 +277,7 @@
     { key: ['udp'], label: '转发 UDP', type: 'bool', def: false },
     { key: ['accept-routes'], label: '接受子网路由', type: 'bool', def: false },
     { key: ['exit-node'], label: '出口节点', summary: '节点名或 IP，留空不使用', type: 'text' },
+    { key: ['advertise-exit-node'], label: '作为出口节点', summary: '让 Tailnet 里的其它设备经本机上网；需在 Tailscale 后台批准', type: 'bool', def: false },
     { key: ['advertise-routes'], label: '通告子网路由', summary: '让 Tailnet 里的设备经本机访问这些网段（如家里的局域网）；需在 Tailscale 后台批准', type: 'list', item: 'cidr', limit: 64 },
   ];
   // 网页管理经内核 tailscale serve 发布到本机 Tailnet 地址（unix socket 只有 root 能连接，身份头可信）

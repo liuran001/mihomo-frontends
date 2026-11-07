@@ -25,7 +25,8 @@ const SPECS = {
 		[ 'mixed-port', 'int' ], [ 'allow-lan', 'bool' ], [ 'bind-address', 'str' ], [ 'ipv6', 'bool' ], [ 'log-level', 'str' ],
 		[ 'find-process-mode', 'str' ], [ 'tcp-concurrent', 'bool' ], [ 'unified-delay', 'bool' ], [ 'sniffer.enable', 'bool' ],
 		[ 'external-controller', 'str' ], [ 'secret', 'str' ], [ 'external-ui', 'str' ], [ 'external-ui-url', 'str' ],
-		[ 'geox-url.geoip', 'str' ], [ 'geox-url.geosite', 'str' ], [ 'geox-url.mmdb', 'str' ], [ 'profile.store-selected', 'bool' ]
+		[ 'geox-url.geoip', 'str' ], [ 'geox-url.geosite', 'str' ], [ 'geox-url.mmdb', 'str' ], [ 'geo-auto-update', 'bool' ], [ 'geodata-loader', 'str' ],
+		[ 'profile.store-selected', 'bool' ]
 	],
 	dns: [
 		[ 'enable', 'bool' ], [ 'listen', 'str' ], [ 'enhanced-mode', 'str' ], [ 'ipv6', 'bool' ], [ 'fake-ip-range', 'str' ],
@@ -33,7 +34,7 @@ const SPECS = {
 		[ 'direct-nameserver', 'list' ], [ 'fake-ip-filter', 'list' ]
 	],
 	tailscale: [
-		[ 'hostname', 'str' ], [ 'auth-key', 'str' ], [ 'udp', 'bool' ], [ 'accept-routes', 'bool' ], [ 'advertise-exit-node', 'bool' ],
+		[ 'hostname', 'str' ], [ 'auth-key', 'str' ], [ 'udp', 'bool' ], [ 'accept-routes', 'bool' ], [ 'exit-node', 'str' ], [ 'advertise-exit-node', 'bool' ],
 		[ 'advertise-routes', 'list' ], [ 'listen-port', 'int' ]
 	]
 };
@@ -389,6 +390,11 @@ return view.extend({
 			o = s.taboption('geo', form.Value, 'geox-url__geoip', 'GeoIP');
 			o = s.taboption('geo', form.Value, 'geox-url__geosite', 'GeoSite');
 			o = s.taboption('geo', form.Value, 'geox-url__mmdb', 'MMDB');
+			o = s.taboption('geo', form.Flag, 'geo-auto-update', '自动更新 GEO 数据', '按周期重新下载上面三个数据文件');
+			o = s.taboption('geo', form.ListValue, 'geodata-loader', 'GEO 数据加载方式', '内存紧张的路由器选「省内存」');
+			o.value('standard', '标准');
+			o.value('memconservative', '省内存');
+			o.default = 'standard';
 		}).then(() => {
 			const btn = mui.btn('更新面板', () => this.upgradeDashboard(btn), 'cbi-button-action');
 			panel.appendChild(mui.card('面板', [
@@ -528,6 +534,8 @@ return view.extend({
 				o.password = true;
 				o = s.option(form.Flag, 'udp', '转发 UDP');
 				o = s.option(form.Flag, 'accept-routes', '接受子网路由');
+				o = s.option(form.Value, 'exit-node', '使用出口节点', '经 Tailnet 里的这台设备上网，填设备名或 IP；留空不使用');
+				o.validate = (sid, v) => (!v || /^\S{1,253}$/.test(v)) ? true : '不能包含空格';
 				o = s.option(form.Flag, 'advertise-exit-node', '作为出口节点');
 				o = s.option(form.DynamicList, 'advertise-routes', '通告子网路由', '例如 192.168.77.0/24；需要在 Tailscale 管理后台批准');
 				o.datatype = 'ipaddr';

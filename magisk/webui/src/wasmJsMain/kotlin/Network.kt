@@ -28,6 +28,7 @@ private const val LISTENER = "@listener"
 
 private val localFields = listOf("local.data-plane", "fakeip-icmp", "local.ipv6", "local.bypass-private-address", "local.bypass-exclude")
 private val sharedFields = listOf("shared.data-plane", "shared.dns-mode", "shared.ipv6", "shared.bypass-private-address",
+    "shared.bypass-exclude", "shared.bypass-port",
     "shared.exclude-mac-address", "shared.include-mac-address", "shared.exclude-source-cidr")
 
 /** "5.10.198-android12" » 5.10 是否 ≥ 5.7。 */
