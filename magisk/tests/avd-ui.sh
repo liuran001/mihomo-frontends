@@ -10,7 +10,7 @@ ADB="/Volumes/data/CodexToolchains/pill-android/sdk/platform-tools/adb -s emulat
 DIR=/Volumes/data/HyperOS-AVD/tmp/mihomo-test
 case "$1" in
   open)
-    # 该 AVD 的 Vulkan 合成会让 WebView 白屏：仅在启动 Manager 时临时切到 skiagl，随后恢复（见 validation.md）。
+    # 该 AVD 的 Vulkan 合成会让 WebView 白屏：仅在启动 Manager 时临时切到 skiagl，随后恢复。
     original=$($ADB shell getprop debug.hwui.renderer | tr -d '\r')
     $ADB shell su -c "am force-stop me.weishu.kernelsu"
     $ADB shell su -c "setprop debug.hwui.renderer skiagl"
