@@ -164,6 +164,18 @@ const REDIR_KEYS = ['tproxy-port', 'redir-port'];
 const LEGACY_EBPF = ['dns-mode', 'bypass-private-address', 'tcp-splice'];
 const SKIP_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_CONTENT = 4 * 1024 * 1024;
+// 与模板一致的 GEO 数据下载地址（jsDelivr 国内可直连）与嗅探设置
+const GEOX = {
+	geoip: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat',
+	geosite: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat',
+	mmdb: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb'
+};
+const SNIFFER = {
+	enable: true, 'parse-pure-ip': true,
+	sniff: { HTTP: { ports: [80, '8080-8880'], 'override-destination': true }, TLS: { ports: [443, 8443] }, QUIC: { ports: [443, 8443] } }
+};
+// 内存低于这个值（MB）时 GEO 数据用省内存方式加载
+const LOW_MEM_MB = 1024;
 
 function has_type(list, t) {
 	return type(list) == 'array' && length(filter(list, (e) => obj(e).type == t)) > 0;
@@ -195,6 +207,29 @@ function outside_home(v) {
 	if (index(split(v, '/'), '..') >= 0)
 		return true;
 	return substr(v, 0, 1) == '/' && substr(v, 0, length(P.HOME) + 1) != P.HOME + '/';
+}
+
+// 本机是否有 IPv6 默认路由、内存大小（MB）；读不到时为 null
+function host_info() {
+	let r = U.run('ip -6 route show default', { stderr: false });
+	let m = match(fs.readfile('/proc/meminfo') ?? '', /MemTotal:[ \t]*([0-9]+) kB/);
+	return { ipv6: (r.code == 0) ? trim(r.out) != '' : null, mem_mb: m ? int(+m[1] / 1024) : null };
+}
+
+function arr_of(v) {
+	return (type(v) == 'array') ? v : [];
+}
+
+// 规则（含 AND/OR/NOT、SUB-RULE 里嵌套的）中是否用到某类匹配
+function rules_use(x, re) {
+	for (let r in arr_of(x.rules))
+		if (type(r) == 'string' && match(r, re))
+			return true;
+	for (let k, list in (type(x['sub-rules']) == 'object') ? x['sub-rules'] : {})
+		for (let r in arr_of(list))
+			if (type(r) == 'string' && match(r, re))
+				return true;
+	return false;
 }
 
 function base_name(v) {
@@ -380,6 +415,35 @@ function adapt(file, args) {
 				push(edits, { t: 'set', p: ['rules'], v: [rule] });
 		});
 	}
+
+	// 9. 与模块向导一致的优化（都是可选项）
+	let host = (type(args.host) == 'object') ? args.host : host_info();
+	if (host.ipv6 === false && x.ipv6 !== false)
+		step('ipv6', '关闭 IPv6', '路由器没有 IPv6 默认路由，避免 AAAA 解析导致连接先走 IPv6 超时', true, () => {
+			basic.ipv6 = false;
+			if (type(x.dns) == 'object' && x.dns.ipv6 === true)
+				push(edits, { t: 'set', p: ['dns', 'ipv6'], v: false });
+		});
+	let geo = rules_use(x, /(^|[(, ])(GEOSITE|GEOIP|SRC-GEOIP)[ \t]*,/) || index(sprintf('%J', x.dns ?? {}), 'geosite:') >= 0;
+	if (geo && type(x['geox-url']) != 'object')
+		step('geox', '设置 GEO 数据下载地址', '规则用到 GEOSITE/GEOIP，改用 jsDelivr 镜像，GitHub 直连不稳定时也能下载', true, () => {
+			for (let k, v in GEOX)
+				basic['geox-url.' + k] = v;
+		});
+	if (geo && host.mem_mb > 0 && host.mem_mb < LOW_MEM_MB && x['geodata-loader'] == null)
+		step('geodata', 'GEO 数据省内存加载', '路由器内存 ' + host.mem_mb + ' MB，减少常驻内存', true, () => { basic['geodata-loader'] = 'memconservative'; });
+	// 路由器上只能识别本机进程，下联设备的连接查不到进程，规则也很少用到
+	if (x['find-process-mode'] == null && !rules_use(x, /(PROCESS-NAME|PROCESS-PATH|UID)/))
+		step('process', '关闭进程查找', '规则没有按进程分流，关闭可降低 CPU 占用', true, () => { basic['find-process-mode'] = 'off'; });
+	if (x['log-level'] == null || x['log-level'] == 'info' || x['log-level'] == 'debug')
+		step('log', '降低日志级别', '改为 warning，减少日志占用的内存', true, () => { basic['log-level'] = 'warning'; });
+	if (x['tcp-concurrent'] == null)
+		step('tcp', '开启 TCP 并发', '同时连接域名解析出的多个 IP，用最快的那个', true, () => { basic['tcp-concurrent'] = true; });
+	if (type(x.profile) != 'object' || x.profile['store-selected'] == null)
+		step('profile', '记住手动选择的节点', '重启内核后保留在代理页手动选择的节点', true, () => { basic['profile.store-selected'] = true; });
+	if (type(x.sniffer) != 'object')
+		step('sniffer', '开启域名嗅探', '从 TLS/HTTP 握手里读出域名，按 IP 进来的连接也能按域名规则分流', true,
+			() => { push(edits, { t: 'set', p: ['sniffer'], v: SNIFFER }); });
 
 	if (err)
 		return fail(err);

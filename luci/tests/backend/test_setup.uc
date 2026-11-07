@@ -102,13 +102,14 @@ fs.unlink(P.RUN_DIR + '/tpl.yaml');
 /* ---------- 补全（adapt） ---------- */
 
 const BASE = 'mixed-port: 17890\nexternal-controller: 0.0.0.0:19090\nsecret: s3\nexternal-ui: ./dashboard\n' +
+	'log-level: warning\ntcp-concurrent: true\nfind-process-mode: off\nprofile:\n  store-selected: true\nsniffer:\n  enable: true\n' +
 	'tun:\n  enable: false\n' +
 	'dns:\n  enable: true\n  listen: 0.0.0.0:1053\n' +
 	'proxies:\n  - {name: DNS_Hijack, type: dns}\n  - {name: dummy, type: socks5, server: 127.0.0.1, port: 1}\n' +
 	'rules:\n  - DST-PORT,53,DNS_Hijack\n  - MATCH,DIRECT\n' +
 	'listeners:\n  - {name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp]}\n';
 const AF = P.RUN_DIR + '/adapt.yaml';
-const AARGS = { lan: ['eth9'], secret: 'gen-secret', mirror: MIRROR };
+const AARGS = { lan: ['eth9'], secret: 'gen-secret', mirror: MIRROR, host: { ipv6: true, mem_mb: 4096 } };
 
 // 去掉 BASE 中以 key 开头的顶层段落，再接上 extra
 function without(key, extra) {
@@ -135,6 +136,31 @@ let has = (list, word) => length(filter(list ?? [], (s) => index(s, word) >= 0))
 let a = adapt(BASE);
 eq([a.r.ok, a.r.adapted], [true, []], '齐全的配置不需要补全', a.r);
 eq(a.text, BASE, '齐全的配置逐字节不变');
+
+// 与模块向导一致的可选优化
+let bare = 'mixed-port: 17890\nexternal-controller: 0.0.0.0:19090\nsecret: s3\nexternal-ui: ./dashboard\nipv6: true\n' +
+	'tun:\n  enable: false\n' +
+	'dns:\n  enable: true\n  listen: 0.0.0.0:1053\n  ipv6: true\n' +
+	'proxies:\n  - {name: DNS_Hijack, type: dns}\n' +
+	'rules:\n  - DST-PORT,53,DNS_Hijack\n  - GEOSITE,cn,DIRECT\n  - MATCH,DIRECT\n' +
+	'listeners:\n  - {name: ebpf-in, type: ebpf, mode: local, network: [tcp, udp]}\n';
+a = adapt(bare, { ...AARGS, host: { ipv6: false, mem_mb: 256 } });
+let oids = map(filter(a.r.changes ?? [], (c) => c.applied), (c) => c.id);
+eq(sort(oids), sort(['ipv6', 'geox', 'geodata', 'process', 'log', 'tcp', 'profile', 'sniffer']), '补全全部优化项', a.r);
+eq([a.x.ipv6, a.x.dns.ipv6, a.x['geodata-loader'], a.x['find-process-mode'], a.x['log-level'], a.x['tcp-concurrent'], a.x.profile['store-selected']],
+	[false, false, 'memconservative', 'off', 'warning', true, true], '优化项写入配置');
+ok(match(a.x['geox-url'].geosite, /jsdelivr/) && a.x.sniffer.enable === true && a.x.sniffer.sniff.TLS.ports[0] == 443, 'GEO 镜像与嗅探设置');
+fs.writefile(P.RUN_DIR + '/opt.yaml', a.text);
+ok(A.validate_file(P.RUN_DIR + '/opt.yaml').ok, '优化后的配置通过 mihomo -t');
+fs.unlink(P.RUN_DIR + '/opt.yaml');
+a = adapt(bare, { ...AARGS, host: { ipv6: true, mem_mb: 4096 } });
+oids = map(a.r.changes ?? [], (c) => c.id);
+ok(index(oids, 'ipv6') < 0 && index(oids, 'geodata') < 0, '有 IPv6 出口、内存充足时不提示这两项', oids);
+a = adapt(bare, { ...AARGS, host: { ipv6: false, mem_mb: 256 }, skip: ['ipv6', 'sniffer'] });
+eq([a.x.ipv6, a.x.sniffer], [true, null], '跳过的可选项不应用');
+a = adapt(replace(bare, 'GEOSITE,cn,DIRECT', 'PROCESS-NAME,curl,DIRECT'), { ...AARGS, host: { ipv6: true, mem_mb: 256 } });
+oids = map(a.r.changes ?? [], (c) => c.id);
+ok(index(oids, 'process') < 0 && index(oids, 'geox') < 0 && index(oids, 'geodata') < 0, '按进程分流时不关闭进程查找；没有 GEO 规则时不设 GEO', oids);
 
 a = adapt(without('listeners'));
 ok(a.r.ok && has(a.r.adapted, 'eBPF'), '没有入站时补 eBPF', a.r);
