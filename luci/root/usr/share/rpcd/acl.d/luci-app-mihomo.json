@@ -3,12 +3,12 @@
 		"description": "Mihomo eBPF：状态、配置与服务管理",
 		"read": {
 			"ubus": {
-				"luci.mihomo": [ "status", "controller", "config_read", "backups", "backup_read", "logs", "diagnostics", "substore_status", "substore_list", "devices", "apply_status", "sections", "interfaces", "tailscale", "core_info", "setup_status", "setup_render" ]
+				"luci.mihomo": [ "status", "controller", "config_read", "backups", "backup_read", "logs", "diagnostics", "substore_status", "substore_list", "devices", "apply_status", "sections", "interfaces", "tailscale", "core_info", "setup_status", "setup_render", "plugin_status" ]
 			}
 		},
 		"write": {
 			"ubus": {
-				"luci.mihomo": [ "validate", "substore_set", "substore_install", "substore_service", "yaml_check", "save_raw", "patch", "tailscale_logout", "provider_toggle", "migrate_include_all", "backup_restore", "backup_delete", "service", "rule_test", "core_check", "core_update", "core_rollback", "core_settings", "setup_fetch", "setup_adapt", "setup_apply" ]
+				"luci.mihomo": [ "validate", "substore_set", "substore_install", "substore_service", "yaml_check", "save_raw", "patch", "tailscale_logout", "provider_toggle", "migrate_include_all", "backup_restore", "backup_delete", "service", "rule_test", "core_check", "core_update", "core_rollback", "core_settings", "setup_fetch", "setup_adapt", "setup_apply", "plugin_check", "plugin_upgrade" ]
 			}
 		}
 	}

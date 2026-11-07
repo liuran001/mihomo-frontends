@@ -391,5 +391,5 @@ function job_rollback(ctx) {
 }
 
 export { DEFAULTS, asset_for, valid_version, parse_checksums, release_url, routes, parse_version, norm_mirror, settings, settings_set,
-	asset, proxy_port,
+	asset, proxy_port, sha256,
 	fetch, info, check, job_update, job_rollback };

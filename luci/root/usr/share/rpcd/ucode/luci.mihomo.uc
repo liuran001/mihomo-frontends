@@ -8,6 +8,7 @@ import * as SY from 'mihomo.system';
 import * as CORE from 'mihomo.core';
 import * as SU from 'mihomo.setup';
 import * as SS from 'mihomo.substore';
+import * as PL from 'mihomo.plugin';
 
 // 所有方法返回 { ok: true, ... } 或 { ok: false, error, detail }；异常也转换成这种形式
 function wrap(fn) {
@@ -57,6 +58,9 @@ return {
 		core_update:    { args: { force: false }, call: wrap((a) => A.begin('core', a)) },
 		core_rollback:  { call: wrap(() => A.begin('core_rollback', {})) },
 		core_settings:  { args: { repo: '', tag: '', mirror: '' }, call: wrap((a) => CORE.settings_set(a)) },
+		plugin_status:  { call: wrap(() => PL.status()) },
+		plugin_check:   { call: wrap(() => PL.check()) },
+		plugin_upgrade: { args: { force: false }, call: wrap((a) => PL.upgrade(a)) },
 		setup_status:   { call: wrap(() => SU.status()) },
 		setup_render:   { args: { subs: [], lan: [], secret: '' }, call: wrap((a) => SU.render(a)) },
 		setup_fetch:    { args: { url: '', ua: '' }, call: wrap((a) => SU.fetch_config(a)) },

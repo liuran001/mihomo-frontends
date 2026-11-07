@@ -30,6 +30,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -644,6 +645,91 @@ fun LogsPage(onBack: () -> Unit) {
                 TextButton("复制全部", modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
                     state.copied = if (copyText(report.orEmpty())) "已复制到剪贴板" else "复制失败，请长按文字手动选择"
                 })
+            }
+        }
+    }
+}
+
+@OptIn(kotlin.js.ExperimentalWasmJsInterop::class)
+@JsFun("() => setTimeout(() => location.reload(), 300)")
+private external fun reloadPage()
+
+/** 模块自身的检查更新与一键升级（module-update.sh）。 */
+private object ToolsModule {
+    val work = ToolsWork()
+    var current by mutableStateOf<JsonObject?>(null)
+    var latest by mutableStateOf<JsonObject?>(null)
+
+    fun refresh() = work.run("读取模块版本中…") {
+        current = request("moduleCurrent")
+        status = ""
+    }
+
+    fun check() = work.run("检查更新中…") {
+        val result = request("moduleCheck")
+        latest = result
+        status = if (result.boolean("update_available")) "有新版本 ${result.string("latest")}" else "已是最新版本（${result.string("latest")}）"
+    }
+
+    /** 下载并交给 root 管理器安装；能立即生效时等新版本换上后刷新页面。 */
+    fun upgrade(force: Boolean = false) = work.run("下载并安装新版本中…", download = true) {
+        val result = request("moduleUpgrade", json("force" to force))
+        val version = result.string("version")
+        if (result.boolean("unchanged")) {
+            status = "已是最新版本（$version）"
+            return@run
+        }
+        if (!result.boolean("live")) {
+            status = "已安装 $version，重启设备后生效"
+            return@run
+        }
+        status = "已安装 $version，正在切换到新版本…"
+        val wanted = latest?.string("latest_code")?.toLongOrNull()
+        // 新版本换上后后台进程会重启，网页管理服务也可能短暂断开：出错时继续等
+        repeat(60) {
+            delay(2000)
+            val now = try { request("moduleCurrent") } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+            if (now != null && (now.string("current") == version || (wanted != null && now.string("current_code").toLongOrNull() == wanted))) {
+                status = "已升级到 $version，正在重新加载页面…"
+                reloadPage()
+                return@run
+            }
+        }
+        status = "已安装 $version；如页面未更新，请重新打开模块网页"
+    }
+}
+
+@Composable
+fun ModuleUpdatePage(onBack: () -> Unit) {
+    val state = ToolsModule
+    LaunchedEffect(Unit) { if (state.current == null) state.refresh() }
+    Page(title = "模块更新", navigationIcon = { BackIcon(onBack) }) {
+        workBanner(state.work)
+        if (toolsActiveWork === state.work && state.work.longDownload) item(key = "progress") {
+            LinearProgressIndicator(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth())
+        }
+        val latest = state.latest
+        group("版本") {
+            InfoRow("当前版本", state.current?.string("current")?.ifBlank { "未知" } ?: "—")
+            if (latest != null) {
+                InfoRow("最新版本", latest.string("latest").ifBlank { "未知" },
+                    valueColor = if (latest.boolean("update_available")) Tone.warning else Tone.success)
+            }
+            Caption("升级后立即生效，不用重启手机；代理不会中断")
+        }
+        item(key = "actions") {
+            ButtonRow {
+                when {
+                    latest == null -> ActionButton("检查更新", primary = true, enabled = toolsIdle) { state.check() }
+                    latest.boolean("update_available") -> {
+                        ActionButton("重新检查", enabled = toolsIdle) { state.check() }
+                        ActionButton("升级", primary = true, enabled = toolsIdle) { state.upgrade() }
+                    }
+                    else -> {
+                        ActionButton("重新检查", enabled = toolsIdle) { state.check() }
+                        ActionButton("重新安装", enabled = toolsIdle) { state.upgrade(force = true) }
+                    }
+                }
             }
         }
     }

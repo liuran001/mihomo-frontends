@@ -256,7 +256,7 @@ test('every operation rejects unknown parameters before executing or fetching', 
   for (const operation of [
     'status', 'coreGetSet', 'coreUpdate', 'coreCheck', 'coreRollback', 'backups', 'policyGet', 'discoveryInterfaces', 'netCheck', 'exitIp',
     'service', 'coreInfo', 'coreSet', 'configRead', 'validate', 'apply', 'backupDel', 'backupRestore',
-    'backupRead', 'logs', 'policySet', 'controller', 'template', 'apps', 'appIcon',
+    'backupRead', 'logs', 'policySet', 'controller', 'template', 'apps', 'appIcon', 'moduleCheck', 'moduleCurrent', 'moduleUpgrade',
   ]) {
     assertError(await bridge.request(operation, { command: 'id' }), /不支持的参数/);
     assertError(await bridge.raw(operation, '{"__proto__":{"command":"id"}}'), /不支持的参数/);
@@ -274,6 +274,7 @@ test('operation validators reject shell injection and invalid types without side
     ['apply', { content: 'config', restart: 'true' }],
     ['coreSet', { repo: 'owner/repo;id' }], ['coreSet', { tag: 'latest\nid' }],
     ['coreSet', { mirror: 'file:///etc/passwd' }], ['coreSet', { tag: 'a'.repeat(4097) }],
+    ['moduleUpgrade', { force: 'yes; id' }],
     ['logs', { lines: '1;id' }], ['logs', { lines: 0 }], ['logs', { lines: 10001 }],
     ['logs', { lines: 1.5 }], ['logs', { lines: null }],
     ['apps', { refresh: 1 }], ['appIcon', { packageName: '../system' }],

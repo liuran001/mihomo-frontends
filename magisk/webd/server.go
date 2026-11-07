@@ -32,7 +32,7 @@ import (
 var loginPage []byte
 
 // scripts 是网页可以调用的模块脚本；每个脚本自己校验子命令与参数。
-var scripts = []string{"apply.sh", "backup.sh", "core.sh", "discovery.sh", "host.sh", "mihomo.sh", "onboarding.sh", "policy.sh", "substore.sh", "tailscale.sh", "webui.sh"}
+var scripts = []string{"apply.sh", "backup.sh", "core.sh", "discovery.sh", "host.sh", "mihomo.sh", "module-update.sh", "onboarding.sh", "policy.sh", "substore.sh", "tailscale.sh", "webui.sh"}
 
 var envNames = []string{"MIHOMO_SECRET"}
 

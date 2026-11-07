@@ -23,7 +23,7 @@ trap 'rm -rf "$STAGE"' EXIT
 cp -r root/. "$STAGE/"
 find "$STAGE" -type d -exec chmod 755 {} +
 find "$STAGE" -type f -exec chmod 644 {} +
-chmod 755 "$STAGE/etc/init.d/mihomo" "$STAGE/etc/init.d/mihomo-substore" "$STAGE/usr/libexec/mihomo-luci/apply-job" "$STAGE/usr/libexec/mihomo-luci/substore-install"
+chmod 755 "$STAGE/etc/init.d/mihomo" "$STAGE/etc/init.d/mihomo-substore" "$STAGE/usr/libexec/mihomo-luci/apply-job" "$STAGE/usr/libexec/mihomo-luci/substore-install" "$STAGE/usr/libexec/mihomo-luci/plugin-upgrade"
 # 与 OpenWrt 构建的包一样带文件清单与配置文件清单（sysupgrade、default_postinst 会读取）
 mkdir -p "$STAGE/lib/apk/packages"
 (cd "$STAGE" && find . ! -type d | sed 's|^\.||' | sort) > "$STAGE/lib/apk/packages/$NAME.list"

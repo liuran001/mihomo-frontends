@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', 'V*']
     branches: [master, main]
   pull_request:
   workflow_dispatch:
@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 检查版本号一致
+        run: sh scripts/check-version.sh
       - name: 安装 Java 17
         uses: actions/setup-java@v4
         with:
@@ -72,29 +74,49 @@ jobs:
           key: mh-tools-${{ runner.os }}-v3.0.5
       - name: 安装 apk-tools
         run: sh luci/scripts/setup-apk-tools.sh
-      - name: 打包 LuCI 应用
+      - name: 打包 LuCI 应用（apk 与 ipk）
         run: |
           cd luci
           sh scripts/build-apk.sh
+          sh scripts/build-ipk.sh
           ls -l dist/
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: luci-apk
-          path: luci/dist/*.apk
+          path: |
+            luci/dist/*.apk
+            luci/dist/*.ipk
+          if-no-files-found: error
 
   release:
     needs: [magisk, luci]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: 生成更新清单与更新说明
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          sh scripts/check-version.sh "$TAG"
+          sh scripts/release-manifest.sh "$TAG" "$REPO" artifacts release
+          cat release/update.json
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.ref_name }}
+          body_path: release/changelog.md
           files: |
             artifacts/magisk-module/*.zip
             artifacts/luci-apk/*.apk
-          generate_release_notes: true
+            artifacts/luci-apk/*.ipk
+            release/update.json
+            release/changelog.md

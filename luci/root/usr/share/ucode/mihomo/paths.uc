@@ -37,7 +37,16 @@ const SUBSTORE_DIR = env('MIHOMO_LUCI_SUBSTORE_DIR', '/etc/mihomo/substore');
 const SUBSTORE_INIT = env('MIHOMO_LUCI_SUBSTORE_INIT', '/etc/init.d/mihomo-substore');
 const SUBSTORE_INSTALLER = env('MIHOMO_LUCI_SUBSTORE_INSTALLER', '/usr/libexec/mihomo-luci/substore-install');
 const NODE = env('MIHOMO_LUCI_NODE', '/usr/bin/node');
+// 插件自身的升级：已安装版本、包管理器、后台安装脚本；后三个 null 的只给测试用（代替 release 地址与安装命令）
+const PLUGIN_VERSION = env('MIHOMO_LUCI_VERSION_FILE', '/usr/share/mihomo-luci/version');
+const APK = env('MIHOMO_LUCI_APK', '/usr/bin/apk');
+const OPKG = env('MIHOMO_LUCI_OPKG', '/bin/opkg');
+const PLUGIN_UPGRADER = env('MIHOMO_LUCI_PLUGIN_UPGRADER', '/usr/libexec/mihomo-luci/plugin-upgrade');
+const PLUGIN_MANIFEST = env('MIHOMO_LUCI_PLUGIN_MANIFEST', null);
+const PLUGIN_BASE = env('MIHOMO_LUCI_PLUGIN_BASE', null);
+const PLUGIN_INSTALL = env('MIHOMO_LUCI_PLUGIN_INSTALL', null);
 
 export { HOME, CONFIG, CANDIDATE, BACKUP_DIR, STATE_DIR, DISABLED, BIN, INIT, SERVICE, RUN_DIR, LOCK, JOB_DIR, YQ, JOB_BIN,
 	START_TIMEOUT, BACKUP_KEEP, LOG_TAG, LEASES, BIN_PREV, TEMPLATE, UCI_DIR, UCI_CONF, CORE_LATEST, CURL, RELEASE_BASE,
-	SUBSTORE_DIR, SUBSTORE_INIT, SUBSTORE_INSTALLER, NODE };
+	SUBSTORE_DIR, SUBSTORE_INIT, SUBSTORE_INSTALLER, NODE,
+	PLUGIN_VERSION, APK, OPKG, PLUGIN_UPGRADER, PLUGIN_MANIFEST, PLUGIN_BASE, PLUGIN_INSTALL };

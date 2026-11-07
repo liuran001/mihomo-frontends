@@ -1,6 +1,7 @@
 id=mihomo-ebpf
-name=mihomo（smart + eBPF）
-version=v1.2.0
-versionCode=3
-author=baka
-description=mihomo 代理内核（liuran001 smart + eBPF 分支）的 Magisk/KernelSU 封装：KSU WebUI 管理内核、配置、订阅与透明代理。
+name=mihomo eBPF
+version=V1.0.0-26110701
+versionCode=26110701
+author=GitHub@liuran001
+description=mihomo eBPF 透明代理，网页里管理节点、订阅和内核。
+updateJson=https://github.com/liuran001/mihomo-frontends/releases/latest/download/update.json

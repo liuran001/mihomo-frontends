@@ -372,6 +372,12 @@ function rpc(method, args, opts) {
 			: Object.assign({}, snap.core_info, { arch: 'aarch64', asset: 'linux-arm64', installed: true, version: CORE_VERSION, prev_version: 'alpha-smart-d1c0a77-ebpf', latest: null, running: true, free_kb: 5.1 * 1024 * 1024 });
 	case 'core_check':
 		return { ok: true, latest: 'alpha-smart-f3b19c0-ebpf', current: fresh ? null : CORE_VERSION, update_available: true, route: '本机代理' };
+	case 'plugin_status':
+		return { ok: true, current: 'V1.0.0-26110701', job: null };
+	case 'plugin_check':
+		return { ok: true, current: 'V1.0.0-26110701', latest: 'V1.0.1-26111501', format: 'apk', update_available: true, route: '本机代理' };
+	case 'plugin_upgrade':
+		return { ok: false, error: '预览中不能升级' };
 	case 'setup_status':
 		return fresh ? { ok: true, core: false, config: false, autostart: false, running: false, arch_ok: true, lan_default: [ 'br-lan' ], rev: null }
 			: Object.assign({}, snap.setup_status, { autostart: true, running: true, lan_default: [ 'br-lan' ] });

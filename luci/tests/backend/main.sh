@@ -10,7 +10,10 @@ export MIHOMO_LUCI_HOME=$H MIHOMO_LUCI_RUN=$T/run MIHOMO_LUCI_INIT=$B/fake-init.
 	MIHOMO_LUCI_SERVICE=mihomo-luci-test MIHOMO_LUCI_START_TIMEOUT=8 \
 	MIHOMO_LUCI_UCI_DIR=$T/uci MIHOMO_LUCI_RELEASE_BASE=file://$T/release/ \
 	MIHOMO_LUCI_SUBSTORE_DIR=$H/substore MIHOMO_LUCI_NODE=$T/no-node MIHOMO_LUCI_SUBSTORE_INIT=$T/no-substore-init \
-	MIHOMO_LUCI_SUBSTORE_INSTALLER=$T/no-substore-install
+	MIHOMO_LUCI_SUBSTORE_INSTALLER=$T/no-substore-install \
+	MIHOMO_LUCI_VERSION_FILE=$T/run/plugin-version MIHOMO_LUCI_APK=$T/release/apk MIHOMO_LUCI_OPKG=$T/no-opkg \
+	MIHOMO_LUCI_PLUGIN_MANIFEST=file://$T/release/update.json MIHOMO_LUCI_PLUGIN_BASE=file://$T/release/ \
+	MIHOMO_LUCI_PLUGIN_INSTALL=$T/release/fake-install MIHOMO_LUCI_PLUGIN_UPGRADER=$T/no-plugin-upgrade
 chmod 755 $B/fake-init.sh $B/fake-mihomo.sh
 tests="$*"
 [ -n "$tests" ] || tests=$(cd $B && ls test_*.uc)

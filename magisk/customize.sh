@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # 安装时由 Magisk / KernelSU / APatch 安装器执行。ARCH、MODPATH、ui_print、abort 由安装器提供。
-ui_print "- 安装 mihomo（smart + eBPF）模块"
+ui_print "- 安装 mihomo eBPF 模块"
 
 case "$ARCH" in
   arm64|x64) ;;
@@ -74,4 +74,19 @@ if [ -s "$DATA/config.yaml" ]; then
   ui_print "- 保留现有配置 $DATA/config.yaml"
 else
   ui_print "- 安装完成后打开模块 WebUI，按向导下载内核并导入订阅"
+fi
+
+# ---- 升级后立即生效 ----
+# root 管理器会把新版本放进 modules_update 并标记 update，默认要重启才换上；这样网页管理要等重启后才能打开新版本。
+# 已安装过（旧版本在运行）时，在后台等安装器收尾后直接换上新版本并重启模块自己的后台进程；内核与配置不受影响。
+MODID=${MODID:-mihomo-ebpf}
+LIVE_CUR=${NVBASE:-/data/adb}/modules/$MODID
+if [ -f "$LIVE_CUR/service.sh" ] && [ ! -e "$LIVE_CUR/remove" ] && [ ! -e "$LIVE_CUR/disable" ] &&
+  [ "$MODPATH" = "${NVBASE:-/data/adb}/modules_update/$MODID" ] && cp -f "$MODPATH/scripts/live-update.sh" "$DATA/run/live-update.sh"; then
+  ui_print "- 升级完成后立即生效，无需重启"
+  (
+    exec </dev/null >>"$DATA/run/live-update.log" 2>&1
+    if command -v setsid >/dev/null 2>&1; then setsid sh "$DATA/run/live-update.sh" "$MODID" "$MODPATH" &
+    else nohup sh "$DATA/run/live-update.sh" "$MODID" "$MODPATH" & fi
+  )
 fi

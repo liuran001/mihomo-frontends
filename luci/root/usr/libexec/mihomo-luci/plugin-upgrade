@@ -1,0 +1,7 @@
+#!/usr/bin/ucode
+'use strict';
+
+// 由 luci.mihomo 的 plugin_upgrade 拉起：plugin-upgrade force|normal
+import { run_upgrade } from 'mihomo.plugin';
+
+run_upgrade(ARGV[0] == 'force');

@@ -536,6 +536,7 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
                 ArrowRow("配置文件与备份", "查看、导入与恢复配置", startIcon = MiuixIcons.Regular.File) { onNavigate("config") }
                 ArrowRow("日志", "排查连不上、规则不生效等问题", startIcon = MiuixIcons.Regular.Notes) { onNavigate("logs") }
                 ArrowRow("重新运行向导", "重新检测本机网络并生成配置", startIcon = MiuixIcons.Regular.Refresh) { onNavigate("setup") }
+                ArrowRow("模块更新", "检查并升级本模块，升级后立即生效", startIcon = MiuixIcons.Regular.Update) { onNavigate("module") }
             }
         }
         if (state.dirty) {

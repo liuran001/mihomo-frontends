@@ -107,7 +107,7 @@
   }
 
   // 网页管理（mihomo-webd）：没有 ksu 时经同源 api/run 调用脚本子命令；只允许 SCRIPTS 中的脚本，不执行任意 shell。
-  const SCRIPTS = ['apply.sh', 'backup.sh', 'core.sh', 'discovery.sh', 'host.sh', 'mihomo.sh', 'onboarding.sh', 'policy.sh', 'substore.sh', 'tailscale.sh', 'webui.sh'];
+  const SCRIPTS = ['apply.sh', 'backup.sh', 'core.sh', 'discovery.sh', 'host.sh', 'mihomo.sh', 'module-update.sh', 'onboarding.sh', 'policy.sh', 'substore.sh', 'tailscale.sh', 'webui.sh'];
   const ENV_NAMES = ['MIHOMO_SECRET', 'MIHOMO_API_TIMEOUT'];
 
   function remoteMode() {
@@ -837,6 +837,7 @@
   for (const [name, command, timeout] of [
     ['status', 'mihomo.sh status'], ['coreGetSet', 'core.sh get_settings'],
     ['coreCheck', 'core.sh check', 90000], ['coreRollback', 'core.sh rollback'],
+    ['moduleCheck', 'module-update.sh check', 90000], ['moduleCurrent', 'module-update.sh current'],
     ['backups', 'backup.sh list'], ['policyGet', 'policy.sh get'],
     ['discoveryInterfaces', 'discovery.sh interfaces', 15000],
     ['onboardingState', 'onboarding.sh get'], ['onboardingComplete', 'onboarding.sh complete'],
@@ -847,6 +848,9 @@
   // force：版本相同也重新下载（默认同版本直接返回 unchanged）
   register('coreUpdate', ['force'], (payload) => boolean(payload.force, 'force', true),
     (payload) => shJson('core.sh', payload.force === true ? ['download', 'force'] : ['download'], 1320000));
+  // 模块自身升级：下载、校验后交给 root 管理器安装，安装后由 live-update.sh 立即换上新版本
+  register('moduleUpgrade', ['force'], (payload) => boolean(payload.force, 'force', true),
+    (payload) => shJson('module-update.sh', payload.force === true ? ['upgrade', 'force'] : ['upgrade'], 1320000));
   register('service', ['action'], (payload) => oneOf(payload.action, ['start', 'stop', 'restart'], '服务操作'), (payload) => service(payload.action));
   register('coreInfo', [], noValidation, async () => {
     const info = await shJson('core.sh', ['info']);
