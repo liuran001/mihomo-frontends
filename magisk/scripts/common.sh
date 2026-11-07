@@ -152,6 +152,16 @@ close_inherited_fds() {
   done
 }
 
+# 在 KernelSU / Magisk 管理器里点「启动」时，拉起的常驻进程会留在管理器应用的 cgroup 里；管理器退到后台后系统冻结
+# 这个 cgroup，进程也被一起冻住（网页管理打不开、代理卡住），回到前台才恢复。启动前把进程移到根 cgroup，
+# 与开机由 service.sh 启动时一样。写不进去（非 root、没有该层级）就保持原样
+leave_app_cgroup() {
+  for procs in $(awk '$3=="cgroup2"{print $2"/cgroup.procs"}' /proc/mounts 2>/dev/null)     /dev/freezer/cgroup.procs /dev/cpuset/cgroup.procs /dev/stune/cgroup.procs /dev/cpuctl/cgroup.procs; do
+    [ -w "$procs" ] && echo "$1" >"$procs" 2>/dev/null
+  done
+  return 0
+}
+
 module_enabled() { [ ! -e "$MODDIR/disable" ] && [ ! -e "$MODDIR/remove" ]; }
 
 # 在 root 管理器的模块列表里显示运行状态：description 前加「状态 | 」，原说明保持不变

@@ -199,6 +199,7 @@ ss_start() {
 }
 
 launch() {
+  leave_app_cgroup "$$"
   launch_ticks=$(process_ticks "$$")
   [ -n "$launch_ticks" ] && atomic_text "$SS_PID" "$$ $launch_ticks" || exit 1
   host=127.0.0.1; [ "$(ss_lan)" = 1 ] && host=0.0.0.0

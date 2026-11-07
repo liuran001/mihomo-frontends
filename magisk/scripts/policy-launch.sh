@@ -1,5 +1,6 @@
 #!/system/bin/sh
 . "${0%/*}/common.sh"
+leave_app_cgroup "$$"
 launch_ticks=$(process_ticks "$$")
 if [ -z "$launch_ticks" ] || ! atomic_text "$PID_FILE" "$$ $launch_ticks"; then
   : >"$RUN_DIR/launch-error"
