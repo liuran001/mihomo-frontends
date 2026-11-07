@@ -196,6 +196,7 @@ internal object LiveHome {
     var trafficError by mutableStateOf("")
     private var summaryUnsupported = false
     private var last: Triple<Double, Double, Double>? = null
+    val hasSample: Boolean get() = last != null
 
     var exitNode by mutableStateOf("")
     var exitChain by mutableStateOf("")
@@ -381,15 +382,21 @@ fun HomePage(onNavigate: (String) -> Unit) {
         if (state.running != true) return@LaunchedEffect
         home.reset()
         if (!home.checkedOnce) { home.checkedOnce = true; home.checkSites(); home.checkIp() }
-        var tick = 0
+        // 慢项（出口、eBPF、订阅）进入页面立即读一次，之后每 30 秒一次，与网速轮询并行，互不等待。
+        // 页面忙（如首次读取状态）时只短暂等待，不跳过整轮，否则慢项要等到下一个 30 秒周期才出来。
+        var lastSlow = -1.0
         while (true) {
             awaitWebuiVisible()
-            if (liveIdle) {
-                home.pollFast()
-                if (tick % 15 == 0 && webuiVisible()) home.pollSlow()
+            if (!liveIdle) { delay(300); continue }
+            val now = nowMs()
+            if (webuiVisible() && (lastSlow < 0 || now - lastSlow >= 30_000)) {
+                lastSlow = now
+                launch { home.pollSlow() }
             }
-            tick++
-            delay(2000)
+            val first = !home.hasSample && home.trafficError.isEmpty()
+            home.pollFast()
+            // 网速由两次采样差值得出：首次采样后 1 秒就补第二次，之后每 2 秒
+            delay(if (first) 1000 else 2000)
         }
     }
     Page(title = "mihomo", actions = {

@@ -53,6 +53,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -301,26 +302,34 @@ internal object LiveOverview {
         policyError = ""
         controllerAddress = ""
         controllerError = ""
-        val statusResult = liveCapture {
-            liveRequest("status").also { check(it.liveBoolean("running") != null) { "服务状态缺少 running 布尔值" } }
+        // 三项互不依赖，并行读取；状态先到先显示
+        coroutineScope {
+            val statusJob = async {
+                liveCapture { liveRequest("status").also { check(it.liveBoolean("running") != null) { "服务状态缺少 running 布尔值" } } }
+            }
+            val coreJob = async {
+                liveCapture { liveRequest("coreInfo").also { check(it.liveBoolean("installed") != null) { "内核安装状态无效" } } }
+            }
+            val policyJob = async {
+                liveCapture { liveRequest("policyGet").also { check(it.liveBoolean("autostart") != null) { "开机自启状态无效" } } }
+            }
+            val statusResult = statusJob.await()
+            status = statusResult.value
+            statusError = statusResult.error
+            val coreResult = coreJob.await()
+            core = coreResult.value
+            coreError = coreResult.error
+            val policyResult = policyJob.await()
+            policy = policyResult.value
+            policyError = policyResult.error
         }
-        status = statusResult.value
-        statusError = statusResult.error
-        val coreResult = liveCapture {
-            liveRequest("coreInfo").also { check(it.liveBoolean("installed") != null) { "内核安装状态无效" } }
-        }
-        core = coreResult.value
-        coreError = coreResult.error
-        val policyResult = liveCapture {
-            liveRequest("policyGet").also { check(it.liveBoolean("autostart") != null) { "开机自启状态无效" } }
-        }
-        policy = policyResult.value
-        policyError = policyResult.error
         if (running != true) return
-        val versionResult = liveCapture { liveControllerRead("/version") }
-        controllerError = versionResult.error
-        if (versionResult.value != null) controllerVersion = versionResult.value.liveText("version").ifBlank { "未知版本" }
-        pollTraffic()
+        coroutineScope {
+            launch { pollTraffic() }
+            val versionResult = liveCapture { liveControllerRead("/version") }
+            controllerError = versionResult.error
+            if (versionResult.value != null) controllerVersion = versionResult.value.liveText("version").ifBlank { "未知版本" }
+        }
     }
 
     suspend fun pollTraffic() {
