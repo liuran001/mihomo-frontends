@@ -3,7 +3,17 @@ package mihomo
 // 分流规则：列表、搜索、编辑、排序与增删。与 LuCI 规则页一致，保存时生成一次 rules.set（bridge/config.js），
 // 未改动的规则按原下标引用，原有注释随规则一起保留。
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,11 +22,20 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -25,9 +44,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Add
+import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal data class RuleView(
@@ -135,7 +156,7 @@ private fun ruleSummary(rule: ParsedRule): String {
 private const val RULE_CHUNK = 40
 
 /** 规则子页的列表内容。修改只改 ProfileState.ruleRows，保存时一起写入。 */
-internal fun LazyListScope.rulesContent(query: String, onQuery: (String) -> Unit, onEdit: (RuleTarget) -> Unit) {
+internal fun LazyListScope.rulesContent(query: String, onQuery: (String) -> Unit, onSort: () -> Unit, onEdit: (RuleTarget) -> Unit) {
     val state = ProfileState
     val view = state.rules
     if (view.unsupported.isNotEmpty()) {
@@ -147,6 +168,8 @@ internal fun LazyListScope.rulesContent(query: String, onQuery: (String) -> Unit
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { InputField("搜索规则（类型、内容或策略）", query) { onQuery(it) } }
         ArrowRow("新增规则", "按域名、IP、应用等条件指定走哪个策略", startIcon = MiuixIcons.Regular.Add,
             enabled = state.busy.isEmpty()) { onEdit(RuleTarget(null)) }
+        if (state.ruleRows.size > 1) ArrowRow("调整顺序", "按住拖动，直接调整规则的先后", startIcon = MiuixIcons.Regular.Sort,
+            enabled = state.busy.isEmpty()) { onSort() }
     }
     val rows = state.ruleRows.withIndex().filter { (_, row) -> query.isBlank() || row.v.contains(query.trim(), ignoreCase = true) }
     item(key = "rules-count") {
@@ -165,6 +188,113 @@ internal fun LazyListScope.rulesContent(query: String, onQuery: (String) -> Unit
                 BasicComponent(title = "${pos + 1}. ${ruleTitle(rule)}$mark", summary = ruleSummary(rule),
                     onClick = if (state.busy.isEmpty()) ({ onEdit(RuleTarget(pos)) }) else null)
             }
+        }
+    }
+}
+
+/** 拖动排序：按住右侧把手上下拖动，拖到列表边缘时自动滚动；「完成」后一次写回 ruleRows，保存时与其它修改一起写入。 */
+@Composable
+internal fun RuleOrderSheet(show: Boolean, onDismiss: () -> Unit) {
+    val state = ProfileState
+    // IndexedValue.index 是打开时的位置，作为拖动期间稳定的 key
+    var order by remember(show) { mutableStateOf(state.ruleRows.withIndex().toList()) }
+    var dragging by remember(show) { mutableStateOf<Int?>(null) }
+    var offset by remember(show) { mutableStateOf(0f) }
+    val list = rememberLazyListState()
+    val changed = order.withIndex().any { (pos, item) -> pos != item.index }
+
+    // 被拖动的一行越过相邻行的中线就交换，偏移量随之扣掉位移，手指下的行保持不动
+    fun reorder() {
+        val id = dragging ?: return
+        val visible = list.layoutInfo.visibleItemsInfo
+        val current = visible.firstOrNull { it.key == id } ?: return
+        val center = current.offset + current.size / 2f + offset
+        val target = visible.firstOrNull { it.key != id && it.key is Int && center >= it.offset && center <= it.offset + it.size } ?: return
+        val from = order.indexOfFirst { it.index == id }
+        val to = order.indexOfFirst { it.index == target.key }
+        if (from < 0 || to < 0) return
+        // 列表默认按 key 锚定滚动位置：被拖的行换到第一行时会把它推出可视区，所以按下标保持当前位置
+        val anchor = list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset
+        order = order.toMutableList().apply { add(to, removeAt(from)) }
+        list.requestScrollToItem(anchor.first, anchor.second)
+        offset += (current.offset - target.offset).toFloat()
+    }
+
+    LaunchedEffect(dragging) {
+        // 拖到可视区上下边缘时持续滚动
+        while (dragging != null) {
+            val info = list.layoutInfo
+            val current = info.visibleItemsInfo.firstOrNull { it.key == dragging }
+            if (current != null) {
+                val top = current.offset + offset
+                val bottom = top + current.size
+                val edge = 56f
+                val step = when {
+                    top < info.viewportStartOffset + edge -> -18f
+                    bottom > info.viewportEndOffset - edge -> 18f
+                    else -> 0f
+                }
+                if (step != 0f) {
+                    val moved = list.scrollBy(step)
+                    offset += moved
+                    reorder()
+                }
+            }
+            delay(16)
+        }
+    }
+
+    Sheet(show = show, title = "调整规则顺序", onDismissRequest = onDismiss) {
+        Caption("按住右侧把手上下拖动。越靠前越先匹配；MATCH 兜底规则一般放在最后。")
+        LazyColumn(state = list, modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).padding(top = 8.dp)) {
+            itemsIndexed(order, key = { _, item -> item.index }) { pos, item ->
+                val active = dragging == item.index
+                val rule = remember(item.value.v) { parseRule(item.value.v) }
+                Row(
+                    Modifier.fillMaxWidth()
+                        .zIndex(if (active) 1f else 0f)
+                        .graphicsLayer { translationY = if (active) offset else 0f }
+                        .background(if (active) MiuixTheme.colorScheme.secondaryContainer else Color.Transparent, RoundedCornerShape(12.dp))
+                        .padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${pos + 1}. ${ruleTitle(rule)}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(ruleSummary(rule), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Box(
+                        Modifier.size(48.dp).pointerInput(item.index) {
+                            detectDragGestures(
+                                onDragStart = { dragging = item.index; offset = 0f },
+                                onDragEnd = { dragging = null; offset = 0f },
+                                onDragCancel = { dragging = null; offset = 0f },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    offset += amount.y
+                                    reorder()
+                                },
+                            )
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        // 拖动把手：三道横线
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            repeat(3) {
+                                Box(Modifier.size(width = 18.dp, height = 2.dp)
+                                    .background(MiuixTheme.colorScheme.onSurfaceVariantSummary, RoundedCornerShape(1.dp)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton("取消", onClick = onDismiss, modifier = Modifier.weight(1f))
+            TextButton("完成", enabled = changed, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary(), onClick = {
+                state.ruleRows = order.map { it.value }
+                onDismiss()
+            })
         }
     }
 }

@@ -286,6 +286,7 @@ fun ProfilePage(onBack: () -> Unit) {
     var node by remember { mutableStateOf<NodeTarget?>(null) }
     var groupTarget by remember { mutableStateOf<GroupTarget?>(null) }
     var ruleTarget by remember { mutableStateOf<RuleTarget?>(null) }
+    var ruleSorting by remember { mutableStateOf(false) }
     var ruleQuery by remember { mutableStateOf("") }
     var paste by remember { mutableStateOf(false) }
     var confirmSave by remember { mutableStateOf(false) }
@@ -311,7 +312,7 @@ fun ProfilePage(onBack: () -> Unit) {
                 return@Page
             }
             when (opened) {
-                "rules" -> { rulesContent(ruleQuery, { ruleQuery = it }) { ruleTarget = it }; return@Page }
+                "rules" -> { rulesContent(ruleQuery, { ruleQuery = it }, { ruleSorting = true }) { ruleTarget = it }; return@Page }
                 "providers" -> {
                     group(null, "providers") {
                         Caption("机场提供的订阅链接，节点会定期自动更新。策略组通过「订阅」选项引用它们。")
@@ -392,6 +393,7 @@ fun ProfilePage(onBack: () -> Unit) {
     NodePasteSheet(paste, onDismiss = { paste = false })
     GroupSheet(groupTarget, onDismiss = { groupTarget = null })
     RuleSheet(ruleTarget) { ruleTarget = it }
+    RuleOrderSheet(ruleSorting) { ruleSorting = false }
     SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
 }
 
