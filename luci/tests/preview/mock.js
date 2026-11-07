@@ -58,10 +58,11 @@ function buildWorld() {
 	proxies.REJECT = { name: 'REJECT', type: 'Reject', alive: true, udp: true, history: [] };
 	proxies.DNS_Hijack = { name: 'DNS_Hijack', type: 'Dns', alive: true, udp: true, history: [] };
 	proxies['TS-Server'] = { name: 'TS-Server', type: 'Tailscale', alive: true, udp: true, history: [] };
-	grp('节点选择', 'Selector', [ '香港', '全部节点', '自动选择', '单独', 'DIRECT' ]);
+	grp('节点选择', 'Selector', [ '香港', '全部节点', '自动选择', '单独', 'DIRECT' ], { icon: 'https://invalid.example/x.png' });
 	grp('dns', 'Selector', [ '节点选择', '香港', '全部节点', '自动选择', 'DIRECT' ]);
-	grp('香港', 'Smart', hk, { now: hk[2] });
-	grp('全部节点', 'Smart', all, { now: all[5] });
+	const svgIcon = (c) => 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="' + c + '"/></svg>').toString('base64');
+	grp('香港', 'Smart', hk, { now: hk[2], icon: svgIcon('#e5484d') });
+	grp('全部节点', 'Smart', all, { now: all[5], icon: svgIcon('#3e63dd') });
 	grp('自动选择', 'URLTest', all, { now: all[9] });
 	grp('单独', 'Selector', providers.Kitty.proxies.map(x => x.name).concat('DIRECT'));
 	grp('GLOBAL', 'Selector', [ '节点选择', 'dns', '香港', '全部节点', '自动选择', '单独', 'DIRECT', 'REJECT' ], { hidden: false });

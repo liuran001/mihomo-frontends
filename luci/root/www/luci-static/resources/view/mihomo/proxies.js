@@ -74,6 +74,39 @@ function currentOf(group) {
 	return group.type === 'Smart' ? (group.fixed || null) : (group.fixed || group.now || null);
 }
 
+// 配置里的 icon：http(s) 或 data:image/ 链接，与模块网页一致
+function iconUrl(v) {
+	return (typeof v === 'string' && (/^https?:\/\//.test(v) || /^data:image\//.test(v))) ? v : '';
+}
+
+// 已成功加载过的图标：节点列表每次刷新都重建，这些直接显示图片，不再先闪一下首字
+const loadedIcons = new Set();
+
+// 图标；没有或加载失败时显示名称首字
+function iconBox(cls) {
+	const box = E('span', { 'class': 'mh-icon ' + cls });
+	box.set = (url, name) => {
+		url = iconUrl(url);
+		if (box.url === url && box.label === name) return;
+		box.url = url;
+		box.label = name;
+		// 先显示首字，图片加载成功后再替换：图标地址很慢或失效时不会留一块空白
+		const img = E('img', { alt: '', referrerpolicy: 'no-referrer' });
+		if (url && loadedIcons.has(url)) {
+			img.src = url;
+			return box.replaceChildren(img);
+		}
+		box.replaceChildren(E('b', {}, Array.from(name || '?')[0]));
+		if (!url) return;
+		img.addEventListener('load', () => {
+			loadedIcons.add(url);
+			if (box.url === url) box.replaceChildren(img);
+		});
+		img.src = url;
+	};
+	return box;
+}
+
 function nodeView(group, idx, opts) {
 	opts = opts || {};
 	const url = group.testUrl || '';
@@ -210,8 +243,7 @@ return view.extend({
 
 	makeCard(name) {
 		const c = {};
-		c.icon = E('img', { 'class': 'mh-group-icon', alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' });
-		c.icon.addEventListener('error', () => { c.icon.hidden = true; });
+		c.icon = iconBox('mh-group-icon');
 		c.type = E('span', { 'class': 'mh-tag' });
 		c.fixed = E('span', { 'class': 'mh-tag warn' });
 		c.chain = E('div', { 'class': 'mh-sub mh-ellipsis' });
@@ -241,9 +273,7 @@ return view.extend({
 		const nodes = nodeView(g, this.idx, { sort: this.prefs.sort, hideDead: this.prefs.hideDead, q: this.q, tested: this.tested });
 		const pickable = PICKABLE.indexOf(g.type) >= 0;
 
-		if (typeof g.icon === 'string' && /^https?:\/\//.test(g.icon)) {
-			if (c.icon.getAttribute('src') !== g.icon) { c.icon.hidden = false; c.icon.src = g.icon; }
-		} else c.icon.hidden = true;
+		c.icon.set(g.icon, name);
 		c.type.textContent = typeLabel(g.type);
 		c.fixed.hidden = !(g.fixed && g.type !== 'Selector');
 		c.fixed.textContent = '已固定';
@@ -277,17 +307,26 @@ return view.extend({
 			c.nodes.replaceChildren(E('div', { 'class': 'mh-sub' }, '没有符合条件的节点'));
 			return;
 		}
-		c.nodes.replaceChildren(...nodes.map(n => E('div', {
+		c.nodes.replaceChildren(...nodes.map(n => {
+			// 子策略组与配了图标的节点带图标，与模块网页一致
+			const p = this.proxies[n.name];
+			let icon = null;
+			if (n.group || iconUrl(p && p.icon)) {
+				icon = iconBox('mh-node-icon');
+				icon.set(p && p.icon, n.name);
+			}
+			return E('div', {
 			'class': 'mh-node' + (n.current ? ' current' : '') + (n.alive ? '' : ' dead') + (pickable ? ' pickable' : ''),
 			'data-name': n.name,
 			title: n.name
 		}, [
-			E('div', { 'class': 'mh-node-name' }, n.name),
+			E('div', { 'class': 'mh-node-name' }, icon ? [ icon, E('span', {}, n.name) ] : n.name),
 			E('div', { 'class': 'mh-node-meta' }, [
 				E('span', { 'class': 'mh-node-type' }, n.group ? typeLabel(n.type) : n.type),
 				E('span', { 'class': 'mh-delay ' + mui.delayClass(n.delay), 'data-test': '1', title: '点击测速' }, delayText(n.delay))
 			])
-		])));
+		]);
+		}));
 	},
 
 	toggle(name) {
