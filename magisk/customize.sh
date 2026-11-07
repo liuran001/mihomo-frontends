@@ -3,9 +3,9 @@
 ui_print "- 安装 mihomo eBPF 模块"
 
 case "$ARCH" in
-  arm64|x64) ;;
+  arm64|x64|arm) ;;
   *)
-    ui_print "! 仅支持 arm64 / x86_64，当前架构：$ARCH"
+    ui_print "! 仅支持 arm64 / armv7 / x86_64，当前架构：$ARCH"
     abort
     ;;
 esac
@@ -18,7 +18,7 @@ if [ -f "$MODPATH/bin/$ARCH/mihomo-webd" ]; then
   mv -f "$MODPATH/bin/$ARCH/mihomo-webd" "$MODPATH/bin/mihomo-webd"
   set_perm "$MODPATH/bin/mihomo-webd" 0 0 0755
 fi
-rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/x64"
+rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/x64" "$MODPATH/bin/arm"
 
 # 网页资源预压缩：网页管理服务向浏览器发送 gzip 版本，远程打开更快。安装包里不带这些副本以减小体积；
 # 压缩失败只影响传输体积，不影响使用（服务会改发原文件）。

@@ -26,7 +26,7 @@ function installed() {
 	return { version: v != '' ? v : null, code: code_of(v) };
 }
 
-// 本机用哪种包：OpenWrt 24.10 起是 apk，之前是 opkg
+// 本机用哪种包：OpenWrt 25.12 起是 apk，24.10 是 opkg
 function format() {
 	if (fs.access(P.APK, 'x'))
 		return 'apk';
@@ -57,13 +57,21 @@ function parse_manifest(text, fmt) {
 		changelog: type(m.changelog) == 'string' ? m.changelog : null };
 }
 
+// 与内核下载相同的线路（本机代理 → 镜像），最后再试一次直连：镜像不通时插件更新仍可用
+function plugin_routes() {
+	let list = CORE.routes(CORE.settings(), CORE.proxy_port());
+	if (!length(filter(list, (r) => r.name == 'direct')))
+		push(list, { name: 'direct', label: '直连', prefix: '', args: ['--noproxy', '*'] });
+	return list;
+}
+
 function latest(opts) {
 	let fmt = format();
 	if (!fmt)
 		return { ok: false, error: '没有找到 apk 或 opkg，无法自动升级' };
 	U.mkdir_p(P.RUN_DIR);
 	let file = P.RUN_DIR + '/plugin-update.json';
-	let r = CORE.fetch(MANIFEST, file, { quick: true, routes: opts?.routes });
+	let r = CORE.fetch(MANIFEST, file, { max_time: 5, routes: opts?.routes ?? plugin_routes() });
 	if (!r.ok)
 		return { ok: false, error: '获取更新信息失败：' + r.error };
 	let res = parse_manifest(fs.readfile(file), fmt);
@@ -131,7 +139,7 @@ function run_upgrade(force, opts) {
 
 	save({ step: 'download', version: l.version });
 	let file = P.RUN_DIR + '/luci-app-mihomo-ebpf.' + l.format;
-	let r = CORE.fetch(l.url, file, { max_time: 120, routes: opts?.routes });
+	let r = CORE.fetch(l.url, file, { max_time: 120, routes: opts?.routes ?? plugin_routes() });
 	if (!r.ok)
 		return save({ state: 'failed', error: '下载安装包失败：' + r.error });
 	if (CORE.sha256(file) != l.sha256) {
@@ -142,7 +150,7 @@ function run_upgrade(force, opts) {
 	save({ step: 'install' });
 	let cmd = P.PLUGIN_INSTALL ?? (l.format == 'apk'
 		? U.shq(P.APK) + ' add --allow-untrusted'
-		: U.shq(P.OPKG) + ' install' + (force ? ' --force-reinstall' : ''));
+		: (force ? 'touch /tmp/mihomo-luci-reinstall && ' : '') + U.shq(P.OPKG) + ' install' + (force ? ' --force-reinstall' : ''));
 	let res = U.run(cmd + ' ' + U.shq(file));
 	fs.unlink(file);
 	if (res.code != 0)
@@ -151,4 +159,4 @@ function run_upgrade(force, opts) {
 	return save({ state: 'done', version: now.version ?? l.version, step: null });
 }
 
-export { job_running, code_of, installed, format, parse_manifest, check, status, upgrade, run_upgrade, STATUS };
+export { plugin_routes, job_running, code_of, installed, format, parse_manifest, check, status, upgrade, run_upgrade, STATUS };

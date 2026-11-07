@@ -7,6 +7,26 @@
 
 安装包在 [Releases](https://github.com/liuran001/mihomo-frontends/releases/latest) 里下载。
 
+## 一键安装 / 更新
+
+OpenWrt（SSH 登录后）：
+
+```sh
+curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | sh
+```
+
+Android（Termux 里，需要 root）：
+
+```sh
+curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | su -c sh
+```
+
+脚本会自动判断设备，装好或更新到最新版；已是最新时什么也不做。国内网络连不上 GitHub 时，换成走镜像：
+
+```sh
+curl -fsSL https://ghfast.top/https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | MIRROR=https://ghfast.top/ sh
+```
+
 ## Android 模块
 
 1. 在 Magisk / KernelSU / APatch 里刷入 `mihomo-ebpf-magisk-*.zip`。
@@ -21,20 +41,15 @@
 - 在电脑浏览器里管理手机（可设密码，也支持 Tailscale）
 - 模块和内核都能在网页里一键更新，模块更新完立即生效，不用重启手机
 
-要求：Android 11 以上、内核支持 eBPF（大多数 GKI 设备都可以）；需要较新的 Android System WebView。
+要求：arm64、armv7 或 x86_64 设备，Android 11 以上，内核支持 eBPF（大多数 GKI 设备都可以）；需要较新的 Android System WebView。
 
 ## OpenWrt 插件
 
-OpenWrt 24.10 及以后（apk）：
+支持 OpenWrt 24.10 及以后（23.05 及更早不支持）。推荐用上面的一键脚本，也可以手动安装：
 
 ```sh
-apk add --allow-untrusted luci-app-mihomo-ebpf-*.apk
-```
-
-OpenWrt 23.05 及更早（opkg）：
-
-```sh
-opkg install luci-app-mihomo-ebpf_*_all.ipk
+apk add --allow-untrusted luci-app-mihomo-ebpf-*.apk    # 25.12 及以后
+opkg update && opkg install luci-app-mihomo-ebpf_*_all.ipk    # 24.10
 ```
 
 装好后在 LuCI 的「服务 › Mihomo」里按向导完成设置。内核和插件都能在「内核」页一键更新。

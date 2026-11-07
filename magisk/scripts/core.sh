@@ -2,11 +2,21 @@
 # 内核下载 / 信息 / 更新 / 回滚。
 . "${0%/*}/common.sh"
 
+# 按系统的主 ABI 选内核：64 位内核上跑 32 位系统时 uname -m 仍是 aarch64，不能只看它
+cpu_abi() { getprop ro.product.cpu.abi 2>/dev/null | tr -d '
+'; }
+
 abi_asset() {
+  case "$(cpu_abi)" in
+    arm64-v8a)             echo "android-arm64"; return ;;
+    armeabi-v7a|armeabi)   echo "android-armv7"; return ;;
+    x86_64)                echo "android-amd64"; return ;;
+  esac
   case "$(uname -m)" in
-    aarch64|arm64) echo "android-arm64" ;;
-    x86_64)        echo "android-amd64" ;;
-    *)             return 1 ;;
+    aarch64|arm64)         echo "android-arm64" ;;
+    armv7*|armv8l|arm)     echo "android-armv7" ;;
+    x86_64)                echo "android-amd64" ;;
+    *)                     return 1 ;;
   esac
 }
 

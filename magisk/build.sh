@@ -106,10 +106,10 @@ cp "$module_root/webd/THIRD-PARTY-NOTICES.txt" "$stage/bin/WEBD-NOTICES.txt"
 for asset in scrcpy-server-v5.0.1.jar SCRCPY-LICENSE.txt jmuxer.min.js JMUXER-LICENSE.txt; do
   cp "$module_root/scrcpy-assets/out/$asset" "$stage/bin/scrcpy/$asset"
 done
-for target in arm64:arm64 x64:amd64; do
+for target in arm64:arm64 x64:amd64 arm:arm; do
   (
     cd -- "$module_root/webd"
-    GOOS=linux GOARCH=${target#*:} CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$stage/bin/${target%%:*}/mihomo-webd" .
+    GOOS=linux GOARCH=${target#*:} GOARM=7 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$stage/bin/${target%%:*}/mihomo-webd" .
   )
 done
 JAVA_HOME=${JAVA_HOME:-} sh "$module_root/device-helper/build.sh" "$stage/device-helper"

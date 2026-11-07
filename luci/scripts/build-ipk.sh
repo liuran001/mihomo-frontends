@@ -1,5 +1,5 @@
 #!/bin/sh
-# 给使用 opkg 的 OpenWrt（23.05 及更早）打 ipk 包，不依赖 OpenWrt SDK：在 Linux（如 WSL）里运行 sh scripts/build-ipk.sh，
+# 给使用 opkg 的 OpenWrt 24.10 打 ipk 包（23.05 的 ucode 缺 socket 模块，不支持），不依赖 OpenWrt SDK：在 Linux（如 WSL）里运行 sh scripts/build-ipk.sh，
 # 输出 dist/luci-app-mihomo-ebpf_<版本>_all.ipk。安装：opkg install luci-app-mihomo-ebpf_<版本>_all.ipk
 # ipk 的格式：gzip 压缩的 tar，内含 debian-binary、control.tar.gz（control 与安装脚本）、data.tar.gz（文件）。
 set -e
@@ -44,12 +44,15 @@ S=scripts/apk-scripts
 {
 	echo '#!/bin/sh'
 	echo '[ -n "$IPKG_INSTROOT" ] && exit 0'
+	echo 'rm -f /tmp/mihomo-luci-reinstall'
 	sed '1d' "$S/post-upgrade"
 } >"$CTRL/postinst"
 {
 	echo '#!/bin/sh'
 	echo '[ -n "$IPKG_INSTROOT" ] && exit 0'
 	echo '[ "$1" = upgrade ] && exit 0'
+	# opkg --force-reinstall 会先按卸载流程运行 prerm；重装方事先放下这个标记，避免停掉服务、取消自启
+	echo '[ -e /tmp/mihomo-luci-reinstall ] && exit 0'
 	sed '1d' "$S/pre-deinstall"
 } >"$CTRL/prerm"
 chmod 755 "$CTRL/postinst" "$CTRL/prerm"

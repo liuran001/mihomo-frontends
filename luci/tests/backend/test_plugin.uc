@@ -78,6 +78,10 @@ U.write_json(PL.STATUS, { state: 'running', pid: 999999999 });
 eq(PL.status().job.state, 'failed', '进程意外退出时显示失败');
 ok(!PL.upgrade({}).ok, '后台程序不存在时报告失败');
 
+let rnames = map(PL.plugin_routes(), (r) => r.name);
+eq(rnames[length(rnames) - 1], 'direct', '插件更新最后总会试直连');
+eq(length(filter(rnames, (n) => n == 'direct')), 1, '直连只试一次');
+
 fs.unlink(R + '/apk');
 eq(PL.format(), null, '没有包管理器');
 ok(!PL.check(DIRECT).ok, '没有包管理器时无法检查');

@@ -26,10 +26,28 @@ if [ -e "$CUR/remove" ] || [ -e "$CUR/disable" ]; then
   exit 0
 fi
 
+RUN_DIR=${MIHOMO_DATA:-/data/adb/mihomo}/run
+
+# 网页管理服务（mihomo-webd）的程序在模块目录里，要换成新版本。必须在移动目录之前用旧脚本停止：
+# 旧脚本按 /proc/<pid>/exe 是否等于模块目录里的程序来认进程，目录改名后就认不出了。
+# 停止不会改「启用」设置，新版本的 service.sh 会按设置重新启动它。
+webd_running=false
+case "$(MODDIR=$CUR SCRIPTS=$CUR/scripts sh "$CUR/scripts/webui.sh" status 2>/dev/null)" in
+  *'"running":true'*) webd_running=true ;;
+esac
+if [ "$webd_running" = true ]; then
+  MODDIR=$CUR SCRIPTS=$CUR/scripts sh "$CUR/scripts/webui.sh" stop >/dev/null 2>&1
+  log '已停止旧的网页管理服务'
+fi
+
 OLD=$ADB/modules/.$ID.old.$$
-mv "$CUR" "$OLD" || { log '无法移开旧版本，保持重启后生效'; exit 1; }
+restore_webd() {
+  [ "$webd_running" = true ] && MODDIR=$CUR SCRIPTS=$CUR/scripts sh "$CUR/scripts/webui.sh" start >/dev/null 2>&1
+}
+mv "$CUR" "$OLD" || { restore_webd; log '无法移开旧版本，保持重启后生效'; exit 1; }
 if ! mv "$NEW" "$CUR"; then
   mv "$OLD" "$CUR"
+  restore_webd
   log '无法放入新版本，已还原，保持重启后生效'
   exit 1
 fi
@@ -37,24 +55,38 @@ rm -f "$CUR/update"
 rmdir "$ADB/modules_update" 2>/dev/null
 log "已替换为 $(sed -n 's/^version=//p' "$CUR/module.prop")"
 
-# 旧版本的巡检循环：脚本文件已随旧目录移走，结束它后由新版本的 service.sh 重新启动
+# 旧版本的巡检循环：它用 flock 占着 watch.lock，这把锁会被它正在 sleep 的子进程继承，
+# 只结束外层 shell 时新巡检拿不到锁就会退出。所以结束所有持有这把锁的进程，再按命令行补一遍。
 for proc in /proc/[0-9]*; do
   pid=${proc#/proc/}
   [ "$pid" = "$$" ] && continue
-  cmd=$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null) || continue
-  case "$cmd" in
-    *"/$ID/scripts/policy.sh watch"*|*"/.$ID.old."*"/scripts/policy.sh watch"*) kill "$pid" 2>/dev/null && log "结束旧巡检 $pid" ;;
-  esac
+  hit=false
+  for fd in "$proc"/fd/*; do
+    [ "$(readlink "$fd" 2>/dev/null)" = "$RUN_DIR/watch.lock" ] && { hit=true; break; }
+  done
+  if [ "$hit" = false ]; then
+    cmd=$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null) || continue
+    case "$cmd" in
+      *"/$ID/scripts/policy.sh watch"*|*"/.$ID.old."*"/scripts/policy.sh watch"*) hit=true ;;
+    esac
+  fi
+  [ "$hit" = true ] && kill "$pid" 2>/dev/null && log "结束旧巡检进程 $pid"
 done
 
 export MODDIR=$CUR SCRIPTS=$CUR/scripts
-# 网页管理服务的程序在模块目录里：正在运行时换成新版本
-webd_was=$(sh "$CUR/scripts/webui.sh" status 2>/dev/null)
-case "$webd_was" in
-  *'"running":true'*) sh "$CUR/scripts/webui.sh" stop >/dev/null 2>&1; log '已停止旧的网页管理服务' ;;
-esac
 sleep 1
 sh "$CUR/service.sh" </dev/null >/dev/null 2>&1
 log '已启动新版本的后台进程'
+
+# 核对：启用了网页管理的，等它起来
+if grep -q '"enabled": *true' "${MIHOMO_DATA:-/data/adb/mihomo}/webui.json" 2>/dev/null; then
+  n=0
+  until sh "$CUR/scripts/webui.sh" status 2>/dev/null | grep -q '"running":true'; do
+    n=$((n + 1))
+    [ "$n" -ge 15 ] && { log '网页管理服务没有起来，尝试再启动一次'; sh "$CUR/scripts/webui.sh" start >/dev/null 2>&1; break; }
+    sleep 1
+  done
+  sh "$CUR/scripts/webui.sh" status 2>/dev/null | grep -q '"running":true' && log '网页管理服务已是新版本' || log '网页管理服务启动失败，见 run/webd.log'
+fi
 rm -rf "$OLD"
 log '升级完成，无需重启'

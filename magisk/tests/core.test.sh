@@ -13,6 +13,20 @@ uname() { echo aarch64; }
 assert_equal "$(abi_asset)" android-arm64
 uname() { echo x86_64; }
 assert_equal "$(abi_asset)" android-amd64
+uname() { echo armv7l; }
+assert_equal "$(abi_asset)" android-armv7
+uname() { echo i686; }
+if abi_asset >/dev/null; then echo '32 位 x86 不支持' >&2; exit 1; fi
+# 64 位内核上的 32 位系统：以 ABI 为准
+uname() { echo aarch64; }
+cpu_abi() { echo armeabi-v7a; }
+assert_equal "$(abi_asset)" android-armv7
+cpu_abi() { echo arm64-v8a; }
+assert_equal "$(abi_asset)" android-arm64
+cpu_abi() { :; }
+assets32='{"assets":[{"browser_download_url":"https://example.org/mihomo-android-arm64-v8-alpha-ebpf.gz"},{"browser_download_url":"https://example.org/mihomo-android-armv7-alpha-ebpf.gz"}]}'
+assert_equal "$(printf '%s' "$assets32" | select_asset android-armv7)" https://example.org/mihomo-android-armv7-alpha-ebpf.gz
+assert_equal "$(release_version https://example.org/mihomo-android-armv7-alpha-smart-0cc66a1-ebpf.gz android-armv7)" alpha-smart-0cc66a1-ebpf
 assets='{"assets":[{"browser_download_url":"https://example.org/mihomo-linux-arm64-v1.gz"},{"browser_download_url":"https://example.org/mihomo-android-arm64.sha256"},{"browser_download_url":"https://example.org/mihomo-android-arm64-v8-alpha-ebpf.gz"}]}'
 assert_equal "$(printf '%s' "$assets" | select_asset android-arm64)" https://example.org/mihomo-android-arm64-v8-alpha-ebpf.gz
 assert_equal "$(printf '%s' "$assets" | select_asset android-amd64)" ''

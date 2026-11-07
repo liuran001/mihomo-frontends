@@ -108,12 +108,12 @@ try {
 foreach ($name in @('scrcpy-server-v5.0.1.jar', 'SCRCPY-LICENSE.txt', 'jmuxer.min.js', 'JMUXER-LICENSE.txt')) {
     $webdFiles += @{ File = (Get-Item -LiteralPath (Join-Path $screenAssets $name)); Entry = "bin/scrcpy/$name" }
 }
-foreach ($target in @(@{ Arch = 'arm64'; GoArch = 'arm64' }, @{ Arch = 'x64'; GoArch = 'amd64' })) {
+foreach ($target in @(@{ Arch = 'arm64'; GoArch = 'arm64' }, @{ Arch = 'x64'; GoArch = 'amd64' }, @{ Arch = 'arm'; GoArch = 'arm' })) {
     $binary = Join-Path $webdOut "$($target.Arch)/mihomo-webd"
     Push-Location -LiteralPath $webdRoot
-    $saved = @{ GOOS = $env:GOOS; GOARCH = $env:GOARCH; CGO_ENABLED = $env:CGO_ENABLED }
+    $saved = @{ GOOS = $env:GOOS; GOARCH = $env:GOARCH; GOARM = $env:GOARM; CGO_ENABLED = $env:CGO_ENABLED }
     try {
-        $env:GOOS = 'linux'; $env:GOARCH = $target.GoArch; $env:CGO_ENABLED = '0'
+        $env:GOOS = 'linux'; $env:GOARCH = $target.GoArch; $env:GOARM = '7'; $env:CGO_ENABLED = '0'
         & go build -trimpath -ldflags '-s -w' -o $binary .
         if ($LASTEXITCODE -ne 0) { throw "mihomo-webd 构建失败（$($target.Arch)），退出码：$LASTEXITCODE" }
     } finally {
