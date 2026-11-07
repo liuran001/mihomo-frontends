@@ -4,6 +4,12 @@ on:
   push:
     tags: ['v*', 'V*']
     branches: [master, main]
+    # 只改版本号的提交（发版前改版本）不单独构建：随后推送的标签会构建并发布。推送标签时不看这个过滤
+    paths-ignore:
+      - VERSION
+      - magisk/module.prop
+      - luci/Makefile
+      - luci/root/usr/share/mihomo-luci/version
   pull_request:
   workflow_dispatch:
 
