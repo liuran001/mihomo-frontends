@@ -167,7 +167,7 @@ fun NativeField(
     val caretColor = colors.primary.css()
     val shape = RoundedCornerShape(16.dp)
     // 只在最上层、且所在页面正显示在前台时显示（分页器里常驻的其它标签页、被子页面盖住的标签页都隐藏）
-    val shown = LocalFieldLayer.current == Overlays.top && LocalPageActive.current
+    val shown = nativeShown()
     Box(
         modifier.fillMaxWidth().clip(shape).background(fieldBackground())
             .then(if (focused) Modifier.border(2.dp, colors.primary, shape) else Modifier),
@@ -196,3 +196,7 @@ fun NativeField(
         )
     }
 }
+
+/** 原生元素当前是否应显示：只在最上层、且所在页面正显示在前台时显示。 */
+@Composable
+internal fun nativeShown(): Boolean = LocalFieldLayer.current == Overlays.top && LocalPageActive.current

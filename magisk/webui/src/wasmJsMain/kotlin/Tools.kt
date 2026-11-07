@@ -42,6 +42,15 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Backup
 import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.icon.extended.Refresh
+import top.yukonga.miuix.kmp.icon.extended.Redo
+import top.yukonga.miuix.kmp.icon.extended.Search
+import top.yukonga.miuix.kmp.icon.extended.Undo
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.time.TimeSource
 
@@ -321,11 +330,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.workBanner(work: Tool
 @Composable
 fun ConfigPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     val state = ToolsConfig
-    var editing by remember { mutableStateOf(false) }
     var confirmSave by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { if (!state.attempted || (state.externalChange && !state.dirty)) state.read() }
-    val highlighter = rememberYamlHighlighter()
-    val problems = rememberYamlLint(state.content, enabled = editing || state.dirty)
+    val problems = rememberYamlLint(state.content, enabled = state.dirty)
     val errors = problems.orEmpty().filter { it.error }
     Box(Modifier.fillMaxSize()) {
         Page(title = "配置文件", navigationIcon = { BackIcon(onBack) }, actions = {
@@ -338,7 +345,7 @@ fun ConfigPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 InfoRow("大小", formatBytes(state.content.encodeToByteArray().size.toDouble()))
                 InfoRow("行数", state.content.count { it == '\n' }.toString())
                 if (state.dirty) InfoRow("状态", "有未保存修改", valueColor = Tone.warning)
-                ArrowRow("编辑原文", "适合熟悉 YAML 的用户", enabled = state.loaded && toolsIdle) { editing = true }
+                ArrowRow("编辑原文", "适合熟悉 YAML 的用户", enabled = state.loaded && toolsIdle) { onNavigate("config-edit") }
                 ArrowRow("按字段编辑", "DNS、eBPF、订阅等常用项") { onNavigate("profile") }
                 ArrowRow("备份", "每次保存前自动备份，保留最近 10 份", startIcon = MiuixIcons.Regular.Backup) { onNavigate("backups") }
             }
@@ -353,32 +360,78 @@ fun ConfigPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
             }
         }
     }
-    Sheet(show = editing, title = "编辑 config.yaml", onDismissRequest = { editing = false }) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextField(value = state.content, onValueChange = { state.content = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp, max = 520.dp),
-                textStyle = MiuixTheme.textStyles.main.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                visualTransformation = highlighter)
-            when {
-                problems == null -> Unit
-                problems.isEmpty() -> Text("YAML 格式正确", fontSize = 13.sp, color = Tone.success)
-                else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    for (problem in problems.take(5)) {
-                        Text((if (problem.line > 0) "第 ${problem.line} 行第 ${problem.col} 列：" else "") + problem.message,
-                            fontSize = 13.sp, lineHeight = 18.sp, color = if (problem.error) Tone.danger else Tone.warning)
-                    }
-                    if (problems.size > 5) Text("还有 ${problems.size - 5} 处问题", fontSize = 12.sp, color = Tone.muted)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton("完成", onClick = { editing = false }, modifier = Modifier.weight(1f))
-                TextButton("保存", onClick = { editing = false; confirmSave = true }, enabled = state.dirty && toolsIdle && errors.isEmpty(),
-                    modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
-            }
-        }
-    }
     SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
     ConfirmDialog(show = state.confirmRefresh, title = "放弃未保存的修改？", summary = "重新读取会覆盖当前编辑内容。", confirm = "重新读取",
         danger = true, onDismiss = { state.confirmRefresh = false }) { state.read() }
+}
+
+/** 全屏编辑 config.yaml：行号、语法高亮、实时校验（出错行在行号栏标红，点按问题跳到该行）、查找、撤销/重做。 */
+@Composable
+fun ConfigEditorPage(onBack: () -> Unit) {
+    val state = ToolsConfig
+    val editor = remember { CodeEditorController() }
+    var confirmSave by remember { mutableStateOf(false) }
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var matches by remember { mutableStateOf<Int?>(null) }
+    var problemIndex by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { if (!state.attempted) state.read() }
+    val problems = rememberYamlLint(state.content, enabled = state.loaded)
+    val errors = problems.orEmpty().filter { it.error }
+    val colors = MiuixTheme.colorScheme
+    Column(Modifier.fillMaxSize().background(colors.surface)) {
+        SmallTopAppBar(
+            title = "配置原文",
+            navigationIcon = { BackIcon(onBack) },
+            actions = {
+                BarAction(MiuixIcons.Regular.Undo, "撤销", enabled = state.loaded) { editor.undo() }
+                BarAction(MiuixIcons.Regular.Redo, "重做", enabled = state.loaded) { editor.redo() }
+                BarAction(MiuixIcons.Regular.Search, "查找", enabled = state.loaded) { searching = !searching; matches = null }
+            },
+            defaultWindowInsetsPadding = false,
+            color = colors.surface,
+        )
+        if (searching) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NativeField("查找", query, Modifier.weight(1f)) { query = it; matches = null }
+            TextButton("上一个", onClick = { matches = editor.find(query, backward = true) }, enabled = query.isNotEmpty())
+            TextButton("下一个", onClick = { matches = editor.find(query) }, enabled = query.isNotEmpty(),
+                colors = ButtonDefaults.textButtonColorsPrimary())
+        }
+        if (state.work.error.isNotEmpty()) Text(state.work.error, fontSize = 13.sp, color = Tone.danger,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(12.dp))
+            .background(colors.surfaceContainerHighest)) {
+            if (state.loaded) CodeEditor(state.content, { state.content = it }, editor, Modifier.fillMaxSize(),
+                errorLines = errors.mapNotNull { it.line.takeIf { line -> line > 0 } }.toSet())
+            else Text(if (toolsActiveWork === state.work) state.work.status else "未读取配置", fontSize = 14.sp, color = Tone.muted,
+                modifier = Modifier.align(Alignment.Center))
+        }
+        // 状态栏：光标位置、匹配数、校验结果（点按依次跳到出问题的行）
+        val problem = problems?.getOrNull(problemIndex % problems.size.coerceAtLeast(1))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("${editor.line}:${editor.column}" + (matches?.let { if (it == 0) " · 无匹配" else " · $it 处匹配" } ?: ""),
+                fontSize = 12.sp, color = Tone.muted, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.width(12.dp))
+            when {
+                problems == null -> Unit
+                problems.isEmpty() -> Text("YAML 格式正确", fontSize = 12.sp, color = Tone.success)
+                problem != null -> Text((if (problem.line > 0) "第 ${problem.line} 行：" else "") + problem.message +
+                    if (problems.size > 1) "（共 ${problems.size} 处，点按切换）" else "",
+                    fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, color = if (problem.error) Tone.danger else Tone.warning,
+                    modifier = Modifier.weight(1f).clickable {
+                        if (problem.line > 0) editor.goto(problem.line)
+                        problemIndex = (problemIndex + 1) % problems.size
+                    })
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton("放弃修改", onClick = { state.content = state.baseline }, enabled = state.dirty && toolsIdle, modifier = Modifier.weight(1f))
+            TextButton("保存", onClick = { confirmSave = true }, enabled = state.dirty && toolsIdle && errors.isEmpty(),
+                modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+        }
+    }
+    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
 }
 
 @Composable

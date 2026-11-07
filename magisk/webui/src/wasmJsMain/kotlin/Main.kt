@@ -186,7 +186,7 @@ fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier, l
 private val tabs = listOf("home" to "首页", "proxies" to "代理", "settings" to "设置")
 
 /** 子页面（压栈显示，带返回）。 */
-private val subPages = setOf("connections", "profile", "core", "config", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced")
+private val subPages = setOf("connections", "profile", "core", "config", "config-edit", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced")
 
 private class Navigator {
     var tab by mutableStateOf("home")
@@ -353,6 +353,7 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
                     "profile" -> ProfilePage(onBack = back)
                     "core" -> CorePage(onBack = back)
                     "config" -> ConfigPage(onBack = back, onNavigate = navigator::go)
+                    "config-edit" -> ConfigEditorPage(onBack = back)
                     "backups" -> BackupsPage(onBack = back)
                     "logs" -> LogsPage(onBack = back)
                     "tailscale" -> TailscalePage(onBack = back)
