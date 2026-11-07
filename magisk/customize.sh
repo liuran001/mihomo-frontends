@@ -19,6 +19,16 @@ if [ -f "$MODPATH/bin/$ARCH/mihomo-webd" ]; then
   set_perm "$MODPATH/bin/mihomo-webd" 0 0 0755
 fi
 rm -rf "$MODPATH/bin/arm64" "$MODPATH/bin/x64"
+
+# 网页资源预压缩：网页管理服务向浏览器发送 gzip 版本，远程打开更快。安装包里不带这些副本以减小体积；
+# 压缩失败只影响传输体积，不影响使用（服务会改发原文件）。
+if command -v gzip >/dev/null 2>&1; then
+  ui_print "- 预压缩网页资源"
+  find "$MODPATH/webroot" -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' -o -name '*.otf' -o -name '*.ttf' -o -name '*.txt' \) |
+    while IFS= read -r asset; do
+      gzip -c "$asset" >"$asset.gz" 2>/dev/null || rm -f "$asset.gz"
+    done
+fi
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 

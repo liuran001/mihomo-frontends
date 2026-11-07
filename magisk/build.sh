@@ -92,10 +92,9 @@ done
 cp -R -- "$module_root/scripts" "$stage/scripts"
 mkdir -- "$stage/webroot"
 cp -R -- "$web_dist/." "$stage/webroot/"
-command -v gzip >/dev/null 2>&1 || fail '缺少 gzip，无法预压缩 WebUI'
-find "$stage/webroot" -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' -o -name '*.otf' -o -name '*.ttf' -o -name '*.map' -o -name '*.txt' \) -exec sh -c '
-  for asset do gzip -n -9 -c "$asset" > "$asset.gz" || exit 1; done
-' sh {} +
+# 网页资源只打包原文件：gzip 副本由 customize.sh 安装时生成（避免安装包里同一份资源存两遍）；
+# source map 只用于调试，不打包
+find "$stage/webroot" -type f \( -name '*.map' -o -name '*.gz' \) -exec rm -f {} +
 # 网页管理服务：静态链接的 Linux 程序，customize.sh 按 ARCH 保留其一
 command -v go >/dev/null 2>&1 || fail '缺少 go，无法构建 mihomo-webd'
 (

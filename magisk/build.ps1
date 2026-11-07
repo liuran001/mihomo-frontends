@@ -153,20 +153,12 @@ try {
             $normalize = $relative -eq 'module.prop' -or $file.Extension -in @('.sh', '.awk')
             Add-PackageFile $archive $file $relative $normalize
         }
+        # 网页资源只打包原文件：gzip 副本由 customize.sh 安装时生成（避免安装包里同一份资源存两遍）；
+        # source map 只用于调试，不打包
         foreach ($file in $webFiles) {
+            if ($file.Extension -eq '.map') { continue }
             $relative = [System.IO.Path]::GetRelativePath($webDist, $file.FullName).Replace('\', '/')
             Add-PackageFile $archive $file "webroot/$relative" $false
-            if ($file.Extension -in @('.wasm', '.js', '.mjs', '.css', '.html', '.json', '.svg', '.otf', '.ttf', '.map', '.txt')) {
-                $entry = $archive.CreateEntry("webroot/$relative.gz", [System.IO.Compression.CompressionLevel]::NoCompression)
-                $target = $entry.Open()
-                try {
-                    $compressed = [System.IO.Compression.GZipStream]::new($target, [System.IO.Compression.CompressionLevel]::Optimal, $true)
-                    try {
-                        $source = [System.IO.File]::OpenRead($file.FullName)
-                        try { $source.CopyTo($compressed) } finally { $source.Dispose() }
-                    } finally { $compressed.Dispose() }
-                } finally { $target.Dispose() }
-            }
         }
         foreach ($item in $webdFiles) { Add-PackageFile $archive $item.File $item.Entry $false }
     } finally { $archive.Dispose() }
