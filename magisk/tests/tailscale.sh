@@ -1,5 +1,5 @@
 #!/bin/sh
-# tailscale.sh：状态读取、登录链接提取、退出登录与路径校验（curl / mihomo.sh 用测试桩）。
+# tailscale.sh：状态读取、登录参数校验、退出登录与路径校验（mihomo.sh 用测试桩；登录链接提取的完整用例在 webd/tools_test.go）。
 set -eu
 
 ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd)
@@ -9,6 +9,8 @@ mkdir -p "$TEST_DIR/module/scripts" "$TEST_DIR/bin" "$TEST_DIR/data/run"
 for script in common.sh tailscale.sh; do
   tr -d '\r' <"$ROOT/scripts/$script" >"$TEST_DIR/module/scripts/$script"
 done
+. "$ROOT/tests/webd-bin.sh"
+install_webd "$TEST_DIR/module"
 export MODDIR=$TEST_DIR/module SCRIPTS=$TEST_DIR/module/scripts MIHOMO_DATA=$TEST_DIR/data TEST_DIR
 export PATH=$TEST_DIR/bin:$PATH
 D=$TEST_DIR/data
@@ -27,19 +29,7 @@ case "$1" in
   start) touch "$TEST_DIR/fake-running" ;;
 esac
 EOF
-# curl 测试桩：/logs 输出 $TEST_DIR/stream 后保持连接；/delay 记录请求后立即返回
-cat >"$TEST_DIR/bin/curl" <<'EOF'
-#!/bin/sh
-for arg in "$@"; do
-  case "$arg" in
-    Authorization:*) echo "$arg" >>"$TEST_DIR/curl.auth" ;;
-    # 与真实内核一样，登录日志在测速唤醒 tsnet 之后才出现
-    */logs\?level=info) n=0; while [ ! -f "$TEST_DIR/curl.delay.done" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n+1)); done; cat "$TEST_DIR/stream"; sleep 30; exit 0 ;;
-    */delay\?*) echo "$arg" >>"$TEST_DIR/curl.delay"; touch "$TEST_DIR/curl.delay.done"; exit 0 ;;
-  esac
-done
-EOF
-chmod +x "$TEST_DIR/bin/curl" "$SCRIPTS/mihomo.sh"
+chmod +x "$SCRIPTS/mihomo.sh"
 
 # ---------- state ----------
 ts state "$D/tailscale"
@@ -65,21 +55,8 @@ for bad in /etc/ts "$D" "$D/../x" "$D/a/../../x" relative; do
 done
 
 # ---------- login ----------
-cat >"$TEST_DIR/stream" <<'EOF'
-{"type":"info","payload":"[Tailscale](Other) To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/other"}
-{"type":"info","payload":"[Tailscale](TS B) LocalBackend state is NeedsLogin; running StartLoginInteractive..."}
-{"type":"info","payload":"[Tailscale](TS B) To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/10972d5101d712"}
-EOF
-MIHOMO_SECRET='s3 cret' ts login http://127.0.0.1:9090 TS%20B 'TS B' 5
-check has "$TEST_DIR/out" '{"ok":true,"url":"https://login.tailscale.com/a/10972d5101d712"}'
-check has "$TEST_DIR/curl.auth" 'Authorization: Bearer s3 cret'
-check has "$TEST_DIR/curl.delay" 'http://127.0.0.1:9090/proxies/TS%20B/delay?url=http%3A%2F%2F100.100.100.100&timeout=8000'
-check sh -c "! ls '$D/run'/ts-login.* >/dev/null 2>&1"
-printf '%s\n' '{"type":"info","payload":"[Tailscale](TS B) AuthLoop: state is Running; done"}' >"$TEST_DIR/stream"
-ts login http://127.0.0.1:9090 TS%20B 'TS B' 5
-check has "$TEST_DIR/out" '{"ok":true,"url":null,"running":true}'
-: >"$TEST_DIR/stream"
-ts login http://127.0.0.1:9090 TS 'TS' 5
+# 控制器连不上时等到超时，报告未运行
+ts login http://127.0.0.1:9 TS TS 1
 check has "$TEST_DIR/out" '{"ok":true,"url":null,"running":false}'
 ts login http://10.0.0.1:9090 TS TS 5
 check has "$TEST_DIR/out" '控制器地址必须是本机'

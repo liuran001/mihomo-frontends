@@ -4,9 +4,10 @@
 #   Android：安装或更新 Magisk / KernelSU / APatch 模块（需要 root）
 #
 # 用法：
-#   curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | sh
+#   OpenWrt：wget -qO- https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | sh
+#   Android（Termux）：curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | su -c sh
 # 国内网络可以经镜像下载脚本，并用 MIRROR 让脚本里的下载也走镜像：
-#   curl -fsSL https://ghfast.top/https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | MIRROR=https://ghfast.top/ sh
+#   wget -qO- https://ghfast.top/https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | MIRROR=https://ghfast.top/ sh
 # 其它环境变量：FORCE=1 版本相同也重新安装；DRY_RUN=1 只下载校验，不安装
 set -u
 

@@ -5,6 +5,7 @@
 //	mihomo-webd set    -c CONF B64JSON    更新设置（只接受已知字段，不改密码）
 //	mihomo-webd passwd -c CONF B64        设置密码；空串清除密码
 //	mihomo-webd addrs                     输出本机可用于访问的地址
+//	mihomo-webd core|module|tailscale|net|release …   模块脚本转发的工具子命令，见 tools.go
 //
 // 子命令的输出都是一行 JSON：{"ok":true,...} 或 {"ok":false,"error":"..."}。
 package main
@@ -28,7 +29,11 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail(errors.New("用法: mihomo-webd serve|get|set|passwd|addrs"))
+		fail(errors.New("用法: mihomo-webd serve|get|set|passwd|addrs|core|module|tailscale|net|release"))
+	}
+	// 由模块脚本转发的工具子命令（见 tools.go）
+	if runTool(os.Args[1], os.Args[2:]) {
+		return
 	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	configPath := flags.String("c", "/data/adb/mihomo/webui.json", "设置文件")

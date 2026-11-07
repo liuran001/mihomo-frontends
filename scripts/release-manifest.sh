@@ -55,7 +55,7 @@ prev=$(git describe --tags --abbrev=0 --match 'V*' "$TAG^" 2>/dev/null || true)
 	echo '### 安装'
 	echo
 	echo "- Magisk / KernelSU / APatch：刷入 \`$(basename "$ZIP")\`；已安装时可在模块网页「设置 › 模块更新」一键升级"
-	echo "- 一键安装 / 更新（OpenWrt 与已 root 的 Android 通用）：\`curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh\`"
+	echo "- 一键安装 / 更新（OpenWrt）：\`wget -qO- https://github.com/$REPO/releases/latest/download/install.sh | sh\`；Android 在 Termux 里：\`curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | su -c sh\`"
 	echo "- OpenWrt 25.12 及以后（apk）：\`apk add --allow-untrusted $(basename "$APK")\`"
 	echo "- OpenWrt 24.10（opkg）：\`opkg install $(basename "$IPK")\`；23.05 及更早不支持"
 	echo '- 已安装的 LuCI 插件可在「内核」页一键升级'

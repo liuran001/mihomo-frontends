@@ -88,33 +88,19 @@ status() {
 
 # ---------- 下载 ----------
 
-github_api() {
-  mirror=$(core_mirror)
-  if [ -n "$mirror" ]; then
-    curl -fsSL -m 30 "$mirror$1" 2>/dev/null && return
-  fi
-  curl -fsSL -m 30 "$1"
-}
-
 fetch_file() {
   mirror=$(core_mirror)
   if [ -n "$mirror" ] && curl -fSL -m 900 -o "$2" "$mirror$1" 2>>"$SS_LOG"; then return 0; fi
   curl -fSL -m 900 -o "$2" "$1" 2>>"$SS_LOG"
 }
 
-release_tag() {
-  github_api "https://api.github.com/repos/$1/releases/latest" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/'
-}
+# release 解析在 mihomo-webd 里（webd/release.go）；查不到 tag 时为空
+release_tag() { "$MODDIR/bin/mihomo-webd" release -data "$DATA" tag "$1" 2>/dev/null; }
 
 install_node() {
   arch=$(node_arch) || { echo "不支持的处理器架构：$(uname -m)" >&2; return 1; }
-  release=$(github_api "https://api.github.com/repos/$NODE_REPO/releases/tags/node-android-$arch-$NODE_MAJOR") || { echo '无法获取 node 版本列表（GitHub API 不可达，可在「内核版本」里设置下载镜像）' >&2; return 1; }
   # 资源名 node-android-<arch>-<版本>.tar.xz，取版本号最大的
-  url=$(printf '%s\n' "$release" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*node-android-'"$arch"'-[0-9.]*\.tar\.xz"' |
-    sed 's/.*"\(https[^"]*\)"$/\1/' |
-    awk -F'-' '{ version=$NF; sub(/\.tar\.xz$/, "", version); split(version, part, "."); printf "%06d%06d%06d %s\n", part[1], part[2], part[3], $0 }' |
-    sort | tail -n 1 | cut -d' ' -f2)
-  [ -n "$url" ] || { echo "没有找到 $arch 架构的 node $NODE_MAJOR 构建" >&2; return 1; }
+  url=$("$MODDIR/bin/mihomo-webd" release -data "$DATA" node "$NODE_REPO" "$arch" "$NODE_MAJOR" 2>&1) || { echo "$url" >&2; return 1; }
   version=${url##*-}; version=${version%.tar.xz}
   work=$SS_DIR/.node.$$
   rm -rf "$work"; mkdir -p "$work" || return 1

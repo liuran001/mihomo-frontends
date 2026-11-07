@@ -39,6 +39,9 @@ jobs:
         run: go vet ./... && go test ./...
       - name: Magisk 回归测试
         run: |
+          # 脚本测试经脚本入口调用真实的 mihomo-webd（内核更新、模块更新等逻辑在里面）
+          (cd magisk/webd && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/mihomo-webd" .)
+          export MIHOMO_WEBD_BIN="$RUNNER_TEMP/mihomo-webd"
           node --test magisk/tests/frontend.test.js magisk/tests/bridge.test.js magisk/tests/onboarding.test.js magisk/tests/config.test.js magisk/tests/login.test.js magisk/tests/screen.test.js magisk/tests/proxylink.test.js
           sh magisk/tests/core.test.sh
           sh magisk/tests/backend.sh

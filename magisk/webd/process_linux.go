@@ -58,7 +58,16 @@ func scrcpyPeerMatches(credential *syscall.Ucred, processID int, ownerID uint32)
 }
 
 func lockConfigFile(file *os.File) error {
-	deadline := time.Now().Add(3 * time.Second)
+	err := lockFileWait(file, 3*time.Second)
+	if errors.Is(err, errLockBusy) {
+		return errors.New("网页管理设置正被修改，请稍后重试")
+	}
+	return err
+}
+
+// lockFileWait 对 file 加排他 flock，最多等 timeout；超时返回 errLockBusy
+func lockFileWait(file *os.File, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for {
 		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -68,7 +77,7 @@ func lockConfigFile(file *os.File) error {
 			return err
 		}
 		if time.Now().After(deadline) {
-			return errors.New("网页管理设置正被修改，请稍后重试")
+			return errLockBusy
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

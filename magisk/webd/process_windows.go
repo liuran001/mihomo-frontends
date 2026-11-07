@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"time"
 )
 
 func setupProcess(command *exec.Cmd) {}
@@ -18,5 +19,7 @@ func verifyScrcpyPeer(connection *net.UnixConn, processID int) error {
 }
 
 func lockConfigFile(file *os.File) error { return nil }
+
+func lockFileWait(file *os.File, timeout time.Duration) error { return nil }
 
 func unlockConfigFile(file *os.File) {}

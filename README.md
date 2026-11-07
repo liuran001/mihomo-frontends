@@ -12,7 +12,7 @@
 OpenWrt（SSH 登录后）：
 
 ```sh
-curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | sh
+wget -qO- https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | sh
 ```
 
 Android（Termux 里，需要 root）：
@@ -21,10 +21,10 @@ Android（Termux 里，需要 root）：
 curl -fsSL https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | su -c sh
 ```
 
-脚本会自动判断设备，装好或更新到最新版；已是最新时什么也不做。国内网络连不上 GitHub 时，换成走镜像：
+脚本会自动判断设备，装好或更新到最新版；已是最新时什么也不做。国内网络连不上 GitHub 时，换成走镜像（OpenWrt 上）：
 
 ```sh
-curl -fsSL https://ghfast.top/https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | MIRROR=https://ghfast.top/ sh
+wget -qO- https://ghfast.top/https://github.com/liuran001/mihomo-frontends/releases/latest/download/install.sh | MIRROR=https://ghfast.top/ sh
 ```
 
 ## Android 模块
