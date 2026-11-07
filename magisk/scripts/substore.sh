@@ -193,11 +193,14 @@ ss_start() {
   ensure_dirs && mkdir -p "$SS_DATA" || return 1
   ss_path >/dev/null
   [ -f "$SS_LOG" ] && [ "$(wc -c <"$SS_LOG")" -gt 1048576 ] && mv -f "$SS_LOG" "$SS_LOG.1"
+  # 在子 shell 里用 exec 永久改 0–2：若写成 ( … ) >/dev/null &，busybox ash 会把调用方的 0–2 备份到 10 以上并一直
+  # 持有到子 shell 结束，而子 shell 要等常驻进程退出，调用方（ksu.exec、网页服务 api/run）就一直读不到输出结束
   (
+    exec </dev/null >/dev/null 2>&1
     close_inherited_fds
     trap '' HUP
     tool setsid sh "$SCRIPTS/substore.sh" launch </dev/null >>"$SS_LOG" 2>&1
-  ) </dev/null >/dev/null 2>&1 &
+  ) &
   wait_count=0
   while [ "$wait_count" -lt 75 ]; do
     sleep 0.2 2>/dev/null || sleep 1

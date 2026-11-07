@@ -40,4 +40,16 @@ test -e /proc/self/fd/19
 exec 9>&-
 exec 12>&-
 exec 19>&-
+# 后台启动常驻进程的子 shell 不能写成 ( … ) >/dev/null &：busybox ash 会把调用方的 0–2 备份到 10 以上并持有到
+# 子 shell 结束（要等常驻进程退出），ksu.exec / api/run 就永远读不到输出结束。应在子 shell 内第一行 exec 重定向。
+if grep -n ') </dev/null >/dev/null 2>&1 &' "$ROOT"/scripts/*.sh; then
+  echo 'FAIL: background launcher keeps caller stdio; use exec redirection inside the subshell' >&2
+  exit 1
+fi
+for file in "$ROOT"/scripts/*.sh; do
+  awk -v file="$file" '/close_inherited_fds$/ && prev !~ /exec <\/dev\/null >\/dev\/null 2>&1/ { print file ": " NR; bad = 1 } { prev = $0 } END { exit bad }' "$file" || {
+    echo 'FAIL: close_inherited_fds must follow exec stdio redirection' >&2
+    exit 1
+  }
+done
 echo 'PASS: real foreign/stale PID rejection and lock FD closure (no core launched)'
