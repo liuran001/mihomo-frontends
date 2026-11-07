@@ -40,10 +40,14 @@ if [ "$webd_running" = true ]; then
   log '已停止旧的网页管理服务'
 fi
 
-OLD=$ADB/modules/.$ID.old.$$
 restore_webd() {
   [ "$webd_running" = true ] && MODDIR=$CUR SCRIPTS=$CUR/scripts sh "$CUR/scripts/webui.sh" start >/dev/null 2>&1
 }
+# 旧版本先移到数据目录里，替换失败时还能放回去；不能留在 modules 下：
+# 管理器会把那里每个带 module.prop 的目录都当成模块，两个同 id 的模块会让它出错甚至崩溃
+mkdir -p "$RUN_DIR" || { restore_webd; log '无法创建运行目录，保持重启后生效'; exit 1; }
+OLD=$RUN_DIR/module-old.$$
+rm -rf "$OLD"
 mv "$CUR" "$OLD" || { restore_webd; log '无法移开旧版本，保持重启后生效'; exit 1; }
 if ! mv "$NEW" "$CUR"; then
   mv "$OLD" "$CUR"
@@ -53,6 +57,10 @@ if ! mv "$NEW" "$CUR"; then
 fi
 rm -f "$CUR/update"
 rmdir "$ADB/modules_update" 2>/dev/null
+# 以前的版本把旧目录放在 modules/.<id>.old.<pid>，中途被打断会一直留着，顺手清掉
+for stale in "$ADB/modules/.$ID.old."*; do
+  [ -d "$stale" ] && rm -rf "$stale" && log "已清理残留的旧版本目录 $stale"
+done
 log "已替换为 $(sed -n 's/^version=//p' "$CUR/module.prop")"
 
 # 旧版本的巡检循环：它用 flock 占着 watch.lock，这把锁会被它正在 sleep 的子进程继承，
@@ -67,11 +75,14 @@ for proc in /proc/[0-9]*; do
   if [ "$hit" = false ]; then
     cmd=$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null) || continue
     case "$cmd" in
-      *"/$ID/scripts/policy.sh watch"*|*"/.$ID.old."*"/scripts/policy.sh watch"*) hit=true ;;
+      *"/$ID/scripts/policy.sh watch"*|*"/.$ID.old."*"/scripts/policy.sh watch"*|*"/module-old."*"/scripts/policy.sh watch"*) hit=true ;;
     esac
   fi
   [ "$hit" = true ] && kill "$pid" 2>/dev/null && log "结束旧巡检进程 $pid"
 done
+
+# 旧版本的进程都已结束，旧目录不再需要
+rm -rf "$OLD"
 
 export MODDIR=$CUR SCRIPTS=$CUR/scripts
 sleep 1
@@ -88,5 +99,4 @@ if grep -q '"enabled": *true' "${MIHOMO_DATA:-/data/adb/mihomo}/webui.json" 2>/d
   done
   sh "$CUR/scripts/webui.sh" status 2>/dev/null | grep -q '"running":true' && log '网页管理服务已是新版本' || log '网页管理服务启动失败，见 run/webd.log'
 fi
-rm -rf "$OLD"
 log '升级完成，无需重启'

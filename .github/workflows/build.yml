@@ -56,6 +56,7 @@ jobs:
           sh magisk/tests/backend-status.sh
           sh magisk/tests/tailscale.sh
           sh magisk/tests/host-webui.sh
+          sh magisk/tests/live-update.sh
       - name: 构建 Compose Miuix Wasm WebUI
         working-directory: magisk/webui
         run: sh ./gradlew --no-daemon wasmJsBrowserDistribution
