@@ -77,7 +77,8 @@ fun ProxiesPage(onBack: (() -> Unit)?) {
     val state = LiveProxies
     val columns = (LocalPageWidth.current.value / 235).toInt().coerceIn(2, 5)
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
-    LaunchedEffect(Unit) { if (state.stale) liveRead("读取代理组中…") { state.load() } }
+    val active = LocalPageActive.current
+    LaunchedEffect(active) { if (active && state.stale) liveRead("读取代理组中…") { state.load() } }
     Page(title = "代理", fullWidth = true, navigationIcon = { if (onBack != null) BackIcon(onBack) }, actions = {
         BarAction(MiuixIcons.Regular.Refresh, "刷新", enabled = liveIdle) { state.refresh() }
     }) {

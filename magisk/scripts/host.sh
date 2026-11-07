@@ -8,6 +8,8 @@
 #   host.sh validate SRC   用内核 -t 校验配置；SRC 为 base64 或 --staged（暂存文件，用后删除）
 #   host.sh logs N         输出最近 N 行内核日志与 logcat 中的 mihomo 日志
 #   host.sh controller     输出配置中的 external-controller、secret、external-ui 行（原样）
+#   host.sh netcheck       在本机测各平台连通性（有 mixed-port/port 时经内核代理，与本机应用同一路由），输出毫秒
+#   host.sh exitip         在本机查询国内、海外出口 IP，输出两个服务的原始 JSON（字符串）
 #   host.sh api METHOD URL [BODY]
 #                          请求本机控制器，密钥由环境变量 MIHOMO_SECRET 传入；输出响应体与 __MIHOMO_HTTP__:状态码
 # 网页管理（mihomo-webd）只能调用这些脚本子命令，不能执行任意 shell。
@@ -226,6 +228,66 @@ icon() {
   b64_file "$tmp"
 }
 
+# 本机经内核代理访问外网：优先 mixed-port，其次 port（HTTP）；都没有时直连（由透明代理接管）
+net_curl() {
+  if [ -x /system/bin/curl ]; then net_bin=/system/bin/curl; else net_bin=$(command -v curl 2>/dev/null); fi
+  [ -n "$net_bin" ] && [ -x "$net_bin" ] || fail '缺少 curl，无法检测'
+  port=$(sed -n 's/^mixed-port:[[:space:]]*["'"'"']\{0,1\}\([0-9][0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -n 1)
+  [ -n "$port" ] || port=$(sed -n 's/^port:[[:space:]]*["'"'"']\{0,1\}\([0-9][0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -n 1)
+  if [ -n "$port" ] && [ "$port" -gt 0 ] 2>/dev/null; then via=proxy; set -- --proxy "http://127.0.0.1:$port"
+  else via=direct; set -- --noproxy '*'; fi
+  net_via=$via
+  net_proxy="$*"
+}
+
+NET_SITES='百度 https://www.baidu.com/favicon.ico
+Google https://www.gstatic.com/generate_204
+GitHub https://github.githubassets.com/favicon.ico
+YouTube https://www.youtube.com/favicon.ico'
+
+netcheck() {
+  net_curl
+  ensure_dirs || fail '无法创建数据目录'
+  dir=$(mktemp -d "$RUN_DIR/netcheck.XXXXXX") || fail '无法创建临时目录'
+  trap 'rm -rf "$dir"' EXIT
+  index=0
+  # 并行测，总耗时约等于最慢的一个（最多 6 秒）
+  while read -r name url; do
+    index=$((index + 1))
+    # shellcheck disable=SC2086
+    "$net_bin" --disable -s -o /dev/null -m 6 --connect-timeout 5 $net_proxy -w '%{http_code} %{time_total}' -- "$url" >"$dir/$index" 2>/dev/null &
+  done <<EOF
+$NET_SITES
+EOF
+  wait
+  printf '{"ok":true,"via":"%s","sites":[' "$net_via"
+  index=0
+  while read -r name url; do
+    index=$((index + 1))
+    ms=$(awk '{ if ($1 != "000" && $1 != "") printf "%d", ($2 * 1000 < 1 ? 1 : $2 * 1000); else printf "0" }' "$dir/$index" 2>/dev/null)
+    [ "$index" -gt 1 ] && printf ','
+    printf '{"name":"%s","ms":%s}' "$name" "${ms:-0}"
+  done <<EOF
+$NET_SITES
+EOF
+  printf ']}\n'
+}
+
+exitip() {
+  net_curl
+  ensure_dirs || fail '无法创建数据目录'
+  dir=$(mktemp -d "$RUN_DIR/exitip.XXXXXX") || fail '无法创建临时目录'
+  trap 'rm -rf "$dir"' EXIT
+  # shellcheck disable=SC2086
+  "$net_bin" --disable -s -m 8 --connect-timeout 5 --max-filesize 65536 $net_proxy -o "$dir/cn" -- https://myip.ipip.net/json 2>/dev/null &
+  # shellcheck disable=SC2086
+  "$net_bin" --disable -s -m 8 --connect-timeout 5 --max-filesize 65536 $net_proxy -o "$dir/intl" -- https://ipwho.is/ 2>/dev/null &
+  wait
+  cn=$(tr -d '\r\n' <"$dir/cn" 2>/dev/null)
+  intl=$(tr -d '\r\n' <"$dir/intl" 2>/dev/null)
+  printf '{"ok":true,"via":"%s","cn":"%s","intl":"%s"}\n' "$net_via" "$(json_escape "$cn")" "$(json_escape "$intl")"
+}
+
 controller_lines() {
   grep -E '^(external-controller|secret|external-ui):' "$CONFIG" 2>/dev/null
 }
@@ -264,7 +326,9 @@ case "${1:-}" in
   icon) [ "$#" -eq 2 ] || { echo '参数无效' >&2; exit 2; }; icon "$2" ;;
   api) [ "$#" -eq 3 ] || [ "$#" -eq 4 ] || { echo '参数无效' >&2; exit 2; }; shift; api "$@" ;;
   probe) probe ;;
+  netcheck) netcheck ;;
+  exitip) exitip ;;
   fetch) [ "$#" -ge 2 ] || fail '缺少链接'; fetch "$2" "${3:-}" ;;
   stage) [ "$#" -eq 3 ] || fail '参数无效'; stage "$2" "$3" ;;
-  *) fail '用法: host.sh probe|fetch|stage|read-config|import-read|validate|logs|diag|controller|icon|api' ;;
+  *) fail '用法: host.sh probe|netcheck|exitip|fetch|stage|read-config|import-read|validate|logs|diag|controller|icon|api' ;;
 esac

@@ -85,6 +85,8 @@ function mockBackend() {
       case 'coreInfo': result = { ok: true, installed, version: installed ? 'Mihomo Meta ' + coreVersion + ' android arm64 with go1.26.0 2026-08-20T17:00:00Z' : '', can_rollback: !fresh }; break;
       case 'coreGetSet': result = { ok: true, repo: 'liuran001/mihomo', tag: 'Prerelease-Alpha', mirror: 'https://ghfast.top/' }; break;
       case 'coreSet': break;
+      case 'netCheck': await sleep(700); result = { ok: true, via: 'proxy', sites: [{ name: '百度', ms: 38 }, { name: 'Google', ms: 182 }, { name: 'GitHub', ms: 1240 }, { name: 'YouTube', ms: 0 }] }; break;
+      case 'exitIp': await sleep(900); result = { ok: true, via: 'proxy', cn: JSON.stringify({ ret: 'ok', data: { ip: '203.0.113.8', location: ['中国', '上海', '上海', '', '电信'] } }), intl: JSON.stringify({ ip: '198.51.100.7', country: 'Japan', city: 'Tokyo', connection: { isp: 'Example ISP' } }) }; break;
       case 'coreCheck': await sleep(600); result = { ok: true, latest: 'alpha-smart-0cc66a1-ebpf', tag: 'Prerelease-Alpha', current: installed ? coreVersion : '', update_available: !installed || coreVersion !== 'alpha-smart-0cc66a1-ebpf' }; break;
       case 'coreUpdate':
         await sleep(1200);

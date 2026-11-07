@@ -342,6 +342,12 @@ internal object LiveOverview {
 
     fun refresh() = liveRun("刷新概览中…", feedback) { load() }
 
+    /** 后台静默刷新服务状态（运行时长、SSID 等），不占用「忙」状态；失败时保留旧值。 */
+    suspend fun refreshQuiet() {
+        val result = liveCapture { liveRequest("status").also { check(it.liveBoolean("running") != null) { "服务状态缺少 running 布尔值" } } }
+        if (result.value != null && liveIdle) status = result.value
+    }
+
     fun service(action: String) {
         if (running == null || action !in setOf("start", "restart", "stop")) return
         val title = when (action) {

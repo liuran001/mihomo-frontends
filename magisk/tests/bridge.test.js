@@ -254,7 +254,7 @@ test('unknown operations and malformed JSON payloads never reach native code', a
 test('every operation rejects unknown parameters before executing or fetching', async () => {
   const bridge = makeBridge();
   for (const operation of [
-    'status', 'coreGetSet', 'coreUpdate', 'coreCheck', 'coreRollback', 'backups', 'policyGet', 'discoveryInterfaces',
+    'status', 'coreGetSet', 'coreUpdate', 'coreCheck', 'coreRollback', 'backups', 'policyGet', 'discoveryInterfaces', 'netCheck', 'exitIp',
     'service', 'coreInfo', 'coreSet', 'configRead', 'validate', 'apply', 'backupDel', 'backupRestore',
     'backupRead', 'logs', 'policySet', 'controller', 'template', 'apps', 'appIcon',
   ]) {

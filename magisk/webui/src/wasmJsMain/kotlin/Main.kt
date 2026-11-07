@@ -3,6 +3,11 @@
 package mihomo
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.layout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -258,6 +263,8 @@ private fun AppShell(navigator: Navigator) {
         val wide = maxWidth >= 1000.dp
         val contentWidth = if (wide) (maxWidth - 216.dp).coerceAtMost(1240.dp) else maxWidth.coerceAtMost(720.dp)
         CompositionLocalProvider(LocalWideLayout provides wide, LocalPageWidth provides contentWidth) {
+            // 首页的网速、出口、eBPF、订阅在 WebUI 打开期间一直在后台更新，切回首页直接显示，历史曲线不丢
+            LaunchedEffect(Unit) { LiveHome.run() }
             Row(Modifier.fillMaxSize()) {
                 if (wide) DesktopNavigation(navigator)
                 Box(Modifier.weight(1f).fillMaxHeight()) { AppContent(navigator, wide) }
@@ -288,13 +295,56 @@ private fun DesktopNavigation(navigator: Navigator) {
     }
 }
 
+/** 主标签页内容：按序号。 */
+@Composable
+private fun TabPage(index: Int, navigator: Navigator) {
+    when (tabs[index].first) {
+        "home" -> HomePage(navigator::go)
+        "proxies" -> ProxiesPage(onBack = null)
+        else -> SettingsPage(navigator::go)
+    }
+}
+
+/** 不测量、不放置：内容保留在组合里（状态、滚动位置都在），但不绘制、不响应点击。 */
+private val HiddenLayout = Modifier.layout { _, constraints -> layout(constraints.maxWidth, constraints.maxHeight) {} }
+
 @Composable
 private fun AppContent(navigator: Navigator, wide: Boolean) {
+    // 窄屏：三个主标签放在横向分页器里，可左右滑动切换；访问过的标签常驻，切换时不再重建整页。
+    // 子页面盖在上面显示，返回时主标签原样还在（滚动位置、已读数据都保留）。
+    val pager = rememberPagerState(initialPage = tabs.indexOfFirst { it.first == navigator.tab }.coerceAtLeast(0)) { tabs.size }
+    val visited = remember { mutableStateMapOf<Int, Boolean>() }
+    if (!wide) {
+        LaunchedEffect(navigator.tab) {
+            val target = tabs.indexOfFirst { it.first == navigator.tab }
+            if (target >= 0 && target != pager.targetPage) pager.animateScrollToPage(target)
+        }
+        LaunchedEffect(pager) {
+            snapshotFlow { pager.settledPage }.collect { page ->
+                if (navigator.tab != tabs[page].first) navigator.tab = tabs[page].first
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val route = navigator.current
             val back: () -> Unit = { navigator.back() }
-            key(route) {
+            val inTab = navigator.stack.isEmpty()
+            if (!wide) {
+                Box(Modifier.fillMaxSize().then(if (inTab) Modifier else HiddenLayout)) {
+                    HorizontalPager(state = pager, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = tabs.size - 1,
+                        userScrollEnabled = inTab, key = { tabs[it].first }) { index ->
+                        val near = index == pager.currentPage || index == pager.targetPage
+                        LaunchedEffect(near) { if (near) visited[index] = true }
+                        if (near || visited[index] == true) {
+                            CompositionLocalProvider(LocalPageActive provides (inTab && pager.settledPage == index)) { TabPage(index, navigator) }
+                        } else {
+                            Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.surface))
+                        }
+                    }
+                }
+            }
+            if (wide || !inTab) key(route) {
                 when (route) {
                     "home" -> HomePage(navigator::go)
                     "proxies" -> ProxiesPage(onBack = if (navigator.stack.isEmpty()) null else back)

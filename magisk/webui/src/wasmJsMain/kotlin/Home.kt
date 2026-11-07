@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
@@ -25,6 +26,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -96,35 +101,6 @@ private external fun storageGet(key: String): String
 
 @JsFun("(k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }")
 private external fun storageSet(key: String, value: String)
-
-/** 计时访问：no-cors 只看能否连通，返回毫秒；失败或超时返回 0。 */
-@JsFun("""(url, ms, done) => {
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), ms);
-    const start = performance.now();
-    fetch(url, { mode: 'no-cors', cache: 'no-store', signal: abort.signal })
-        .then(() => done(String(Math.max(1, Math.round(performance.now() - start)))), () => done('0'))
-        .finally(() => clearTimeout(timer));
-}""")
-private external fun probeJs(url: String, ms: Int, done: (String) -> Unit)
-
-@JsFun("""(url, done) => {
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 6000);
-    fetch(url, { cache: 'no-store', signal: abort.signal }).then(r => r.text()).then(done, () => done(''))
-        .finally(() => clearTimeout(timer));
-}""")
-private external fun fetchTextJs(url: String, done: (String) -> Unit)
-
-private suspend fun probe(url: String): Int = suspendCancellableCoroutine { c ->
-    probeJs(url + (if ('?' in url) "&" else "?") + "_=" + nowMs().toLong(), 5000) { if (c.isActive) c.resume(it.toIntOrNull() ?: 0) }
-}
-
-private suspend fun fetchJson(url: String): JsonObject? = suspendCancellableCoroutine { c ->
-    fetchTextJs(url) { text ->
-        if (c.isActive) c.resume(runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull())
-    }
-}
 
 private suspend fun ctl(path: String, method: String = "GET"): JsonObject? =
     request("controller", json("path" to path, "method" to method))["data"] as? JsonObject
@@ -231,6 +207,35 @@ internal object LiveHome {
         ebpfDetailsError = ""
     }
 
+    /**
+     * WebUI 打开期间一直运行（不随首页离开而停）：服务运行时每 2 秒读网速，每 30 秒读出口、eBPF、订阅并静默刷新状态。
+     * 服务重新启动（running 由否变是）时才清空曲线，切换页面不清。
+     */
+    suspend fun run() {
+        snapshotFlow { LiveOverview.running == true }.distinctUntilChanged().collectLatest { on ->
+            if (!on) return@collectLatest
+            reset()
+            if (!checkedOnce) { checkedOnce = true; checkSites(); checkIp() }
+            coroutineScope {
+                var lastSlow = nowMs()
+                launch { pollSlow() }
+                while (true) {
+                    awaitWebuiVisible()
+                    if (!liveIdle) { delay(300); continue }
+                    val now = nowMs()
+                    if (webuiVisible() && now - lastSlow >= 30_000) {
+                        lastSlow = now
+                        launch { LiveOverview.refreshQuiet(); pollSlow() }
+                    }
+                    val first = !hasSample && trafficError.isEmpty()
+                    pollFast()
+                    // 网速由两次采样差值得出：首次采样后 1 秒就补第二次，之后每 2 秒
+                    delay(if (first) 1000 else 2000)
+                }
+            }
+        }
+    }
+
     /** 每 2 秒：由累计流量差值算出实时网速。 */
     suspend fun pollFast() {
         if (summaryUnsupported) return
@@ -321,9 +326,23 @@ internal object LiveHome {
         }
     }
 
+    var netVia by mutableStateOf("")
+
+    /** 连通性在模块所在设备上测（经内核代理），而不是在打开网页的浏览器里测。 */
     fun checkSites() {
         sites = SITES.associate { it.name to null }
-        for (site in SITES) liveScope.launch { val ms = probe(site.url); sites = sites + (site.name to ms) }
+        liveScope.launch {
+            sites = try {
+                val result = request("netCheck")
+                netVia = result.string("via")
+                val measured = result.objects("sites").associate { it.string("name") to (it.num("ms")?.toInt() ?: 0) }
+                SITES.associate { it.name to (measured[it.name] ?: 0) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                SITES.associate { it.name to 0 }
+            }
+        }
     }
 
     fun checkIp() {
@@ -331,17 +350,17 @@ internal object LiveHome {
         if (!ipEnabled) return
         ipCn = "查询中…"; ipIntl = "查询中…"
         liveScope.launch {
-            val d = fetchJson("https://myip.ipip.net/json")?.obj("data")
+            val result = try { request("exitIp") } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+            fun parse(text: String?): JsonObject? = text?.takeIf { it.isNotBlank() }?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+            val d = parse(result?.string("cn"))?.obj("data")
             ipCn = if (d == null) "查询失败" else {
                 val loc = (d["location"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank) }.orEmpty()
                 d.string("ip", "-") + if (loc.isEmpty()) "" else " · " + loc.distinct().joinToString(" ")
             }
-        }
-        liveScope.launch {
-            val d = fetchJson("https://ipwho.is/")
-            ipIntl = if (d == null || d.string("ip").isEmpty()) "查询失败" else {
-                val isp = d.obj("connection")?.let { it.string("isp").ifEmpty { it.string("org") } }.orEmpty()
-                d.string("ip") + " · " + listOf(d.string("country"), d.string("city"), isp).filter { it.isNotBlank() }.joinToString(" ")
+            val w = parse(result?.string("intl"))
+            ipIntl = if (w == null || w.string("ip").isEmpty()) "查询失败" else {
+                val isp = w.obj("connection")?.let { it.string("isp").ifEmpty { it.string("org") } }.orEmpty()
+                w.string("ip") + " · " + listOf(w.string("country"), w.string("city"), isp).filter { it.isNotBlank() }.joinToString(" ")
             }
         }
     }
@@ -377,28 +396,9 @@ internal object LiveHome {
 fun HomePage(onNavigate: (String) -> Unit) {
     val state = LiveOverview
     val home = LiveHome
-    LaunchedEffect(Unit) { liveRead("读取状态中…") { state.load() } }
-    LaunchedEffect(state.running) {
-        if (state.running != true) return@LaunchedEffect
-        home.reset()
-        if (!home.checkedOnce) { home.checkedOnce = true; home.checkSites(); home.checkIp() }
-        // 慢项（出口、eBPF、订阅）进入页面立即读一次，之后每 30 秒一次，与网速轮询并行，互不等待。
-        // 页面忙（如首次读取状态）时只短暂等待，不跳过整轮，否则慢项要等到下一个 30 秒周期才出来。
-        var lastSlow = -1.0
-        while (true) {
-            awaitWebuiVisible()
-            if (!liveIdle) { delay(300); continue }
-            val now = nowMs()
-            if (webuiVisible() && (lastSlow < 0 || now - lastSlow >= 30_000)) {
-                lastSlow = now
-                launch { home.pollSlow() }
-            }
-            val first = !home.hasSample && home.trafficError.isEmpty()
-            home.pollFast()
-            // 网速由两次采样差值得出：首次采样后 1 秒就补第二次，之后每 2 秒
-            delay(if (first) 1000 else 2000)
-        }
-    }
+    val active = LocalPageActive.current
+    // 状态已读过就不再整页重读（那会让按钮短暂不可用、要等几秒）；后台轮询会每 30 秒静默刷新一次
+    LaunchedEffect(active) { if (active && state.status == null && liveIdle) liveRead("读取状态中…") { state.load() } }
     Page(title = "mihomo", actions = {
         BarAction(MiuixIcons.Regular.Refresh, "刷新", enabled = liveIdle) {
             state.refresh()
@@ -671,29 +671,41 @@ private fun delayTone(ms: Int?): Color = when {
 private fun ConnectivityCard() {
     val home = LiveHome
     HomeCard("连通性", tools = { SmallAction("重测") { home.checkSites(); home.checkIp() } }) {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (site in SITES) {
-                val ms = home.sites[site.name]
-                val tested = site.name in home.sites
-                val color = if (!tested) Tone.muted else delayTone(ms)
-                Row(Modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(Modifier.size(6.dp).clip(CircleShape).background(color))
-                    Text(site.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.onSurface)
-                    Text(when {
-                        !tested -> "-"
-                        ms == null -> "测试中"
-                        ms <= 0 -> "超时"
-                        else -> "$ms ms"
-                    }, fontSize = 12.sp, color = color)
+        // 四个平台等宽排列：宽屏一行四个，窄屏两行两列，各项上下左右对齐
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val columns = if (maxWidth >= 480.dp) 4 else 2
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (row in SITES.chunked(columns)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (site in row) {
+                            val ms = home.sites[site.name]
+                            val tested = site.name in home.sites
+                            val color = if (!tested) Tone.muted else delayTone(ms)
+                            Row(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+                                Text(site.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.onSurface,
+                                    maxLines = 1, modifier = Modifier.weight(1f))
+                                Text(when {
+                                    !tested -> "-"
+                                    ms == null -> "测试中"
+                                    ms <= 0 -> "超时"
+                                    else -> "$ms ms"
+                                }, fontSize = 12.sp, color = color, maxLines = 1)
+                            }
+                        }
+                        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
                 }
             }
         }
+        Text(if (home.netVia == "direct") "在模块所在设备上直连测试" else "在模块所在设备上经代理测试",
+            fontSize = 11.sp, color = Tone.muted, modifier = Modifier.padding(top = 6.dp))
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("出口 IP", fontSize = 14.sp, color = MiuixTheme.colorScheme.onSurface)
-                Text("查询会访问 ipip.net 与 ipwho.is", fontSize = 11.sp, color = Tone.muted)
+                Text("由模块所在设备查询 ipip.net 与 ipwho.is", fontSize = 11.sp, color = Tone.muted)
             }
             Switch(checked = home.ipEnabled, onCheckedChange = { home.toggleIp(it) })
         }

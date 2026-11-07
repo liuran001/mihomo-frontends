@@ -838,6 +838,8 @@
     ['backups', 'backup.sh list'], ['policyGet', 'policy.sh get'],
     ['discoveryInterfaces', 'discovery.sh interfaces', 15000],
     ['onboardingState', 'onboarding.sh get'], ['onboardingComplete', 'onboarding.sh complete'],
+    // 连通性与出口 IP 在模块所在设备上测，从别的设备打开网页时结果才有意义
+    ['netCheck', 'host.sh netcheck', 20000], ['exitIp', 'host.sh exitip', 20000],
   ]) register(name, [], noValidation, () => shJson(command.split(' ')[0], command.split(' ').slice(1), timeout));
 
   // force：版本相同也重新下载（默认同版本直接返回 unchanged）

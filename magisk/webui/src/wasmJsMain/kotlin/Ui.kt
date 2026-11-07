@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +78,8 @@ private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0
 
 val LocalWideLayout = staticCompositionLocalOf { false }
 val LocalPageWidth = staticCompositionLocalOf { 720.dp }
+/** 当前页是否正显示在前台（分页器里常驻的其它标签为 false），页面据此决定何时刷新数据。 */
+val LocalPageActive = compositionLocalOf { true }
 
 /** 标准页面：大标题 + 折叠 + 回弹列表。 */
 @Composable
