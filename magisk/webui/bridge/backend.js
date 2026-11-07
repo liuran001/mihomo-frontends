@@ -408,7 +408,9 @@
       } else if (marker === '#@ui-url') {
         if (payload.uiUrl) output.push('external-ui-url: ' + JSON.stringify(payload.uiUrl));
       } else if (marker === '#@fake-ip-filter-url') {
-        output.push('    url: ' + JSON.stringify(payload.rulesUrl));
+        // 与 LuCI 向导一致：走镜像时直连即可；直连 GitHub 不稳定，没有镜像时经代理下载
+        output.push('    url: ' + JSON.stringify(payload.rulesUrl),
+          '    proxy: ' + JSON.stringify(/^https:\/\/github\.com\//.test(payload.rulesUrl) ? '节点选择' : 'DIRECT'));
       } else if (marker === '#@lan') {
         output.push('      interface: []');
       } else if (/^external-controller:/.test(line)) {

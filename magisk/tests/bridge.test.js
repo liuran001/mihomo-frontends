@@ -813,6 +813,9 @@ test('template escapes YAML-sensitive fields and supports explicit secret, UI an
   assert.ok(response.content.includes('    header:\n      User-Agent: [' + JSON.stringify(subscription.ua) + ']'));
   assert.ok(response.content.includes('secret: ' + JSON.stringify(secret)));
   assert.ok(response.content.includes('    url: "https://rules.example/fakeip.mrs"'));
+  assert.ok(response.content.includes('    url: "https://rules.example/fakeip.mrs"\n    proxy: "DIRECT"'), '经镜像下载规则集时直连');
+  const direct = await bridge.request('template', { subscriptions: [subscription], secret, uiUrl: '' });
+  assert.ok(direct.content.includes('fakeip-filter.mrs"\n    proxy: "节点选择"'), '直连 GitHub 时经代理下载规则集（与 LuCI 一致）');
   assert.doesNotMatch(response.content, /^external-ui-url:/m);
   assertClean(bridge);
 });
