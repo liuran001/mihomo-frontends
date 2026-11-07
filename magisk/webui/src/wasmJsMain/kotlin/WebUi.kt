@@ -552,6 +552,7 @@ internal fun PasswordField(label: String, value: String, onChange: (String) -> U
         value = value,
         onValueChange = onChange,
         label = label,
+        colors = top.yukonga.miuix.kmp.basic.TextFieldDefaults.textFieldColors(backgroundColor = fieldBackground()),
         singleLine = true,
         visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
         modifier = Modifier.fillMaxWidth(),

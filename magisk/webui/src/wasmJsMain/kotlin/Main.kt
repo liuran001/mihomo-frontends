@@ -353,7 +353,8 @@ fun main() {
                     paragraph = defaults.paragraph.copy(fontFamily = loaded, color = ink),
                     body1 = defaults.body1.copy(fontFamily = loaded, color = ink),
                     body2 = defaults.body2.copy(fontFamily = loaded, color = ink),
-                    button = defaults.button.copy(fontFamily = loaded, color = ink),
+                    // 按钮文字颜色由按钮按底色决定（主按钮白字），这里只换字体
+                    button = defaults.button.copy(fontFamily = loaded),
                     footnote1 = defaults.footnote1.copy(fontFamily = loaded, color = ink),
                     footnote2 = defaults.footnote2.copy(fontFamily = loaded, color = ink),
                     headline1 = defaults.headline1.copy(fontFamily = loaded, color = ink),

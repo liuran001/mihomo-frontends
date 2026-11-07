@@ -263,6 +263,12 @@ fun RowScope.ActionButton(text: String, primary: Boolean = false, enabled: Boole
     )
 }
 
+/** 输入框底色：放在与默认底色相同的浅灰卡片里时（如弹窗内的 SheetCard）改用页面底色，否则未选中的输入框与卡片融在一起。 */
+val LocalFieldBackground = staticCompositionLocalOf<Color?> { null }
+
+@Composable
+fun fieldBackground(): Color = LocalFieldBackground.current ?: MiuixTheme.colorScheme.secondaryContainer
+
 /** 输入框（miuix TextField），卡片内左右留白。 */
 @Composable
 fun InputField(
@@ -280,6 +286,7 @@ fun InputField(
         onValueChange = onChange,
         label = label,
         useLabelAsPlaceholder = false,
+        colors = top.yukonga.miuix.kmp.basic.TextFieldDefaults.textFieldColors(backgroundColor = fieldBackground()),
         enabled = enabled,
         singleLine = singleLine,
         minLines = minLines,

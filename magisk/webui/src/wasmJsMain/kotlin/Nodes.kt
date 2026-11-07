@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -156,7 +157,9 @@ private fun pickedGroups(groups: List<NodeGroup>, selected: Set<String>): JsonAr
 
 @Composable
 internal fun SheetCard(content: @Composable () -> Unit) {
-    Card(Modifier.padding(top = 12.dp), colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) { content() }
+    Card(Modifier.padding(top = 12.dp), colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
+        CompositionLocalProvider(LocalFieldBackground provides MiuixTheme.colorScheme.surfaceContainer) { content() }
+    }
 }
 
 /** 粘贴分享链接：解析预览 → 选择策略组 → 暂存。 */
