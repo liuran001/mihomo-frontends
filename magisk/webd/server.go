@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "embed"
@@ -658,8 +660,9 @@ func listenTCP(config Config) (net.Listener, error) {
 	return tcp, err
 }
 
-// configPollInterval 是检查 webui.json 的间隔：端口、局域网监听变化时换地址，关闭网页管理时退出
-var configPollInterval = time.Second
+// configPollInterval 是兜底检查 webui.json 的间隔：端口、局域网监听变化时换地址，关闭网页管理时退出。
+// 通过 webui.sh 保存的设置会发 SIGHUP 立即生效，不靠这个间隔
+var configPollInterval = 30 * time.Second
 
 func (s *Server) listen(ctx context.Context, socketPath string) error {
 	defer s.shutdownScrcpy()
@@ -764,6 +767,10 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 	disabled := make(chan struct{})
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
+	// webui.sh set 保存设置后发 SIGHUP，立刻重新读取；定时检查只兜底手动改文件的情况，间隔放长免得常驻进程频繁唤醒
+	changed := make(chan os.Signal, 1)
+	signal.Notify(changed, syscall.SIGHUP)
+	defer signal.Stop(changed)
 	go func() {
 		bound := config
 		ticker := time.NewTicker(configPollInterval)
@@ -773,6 +780,7 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 			case <-stopWatch:
 				return
 			case <-ticker.C:
+			case <-changed:
 			}
 			if s.reload() != nil {
 				continue

@@ -2,7 +2,7 @@
 # 网页管理（局域网 / Tailscale 访问模块网页）。
 #   webui.sh status          {"ok":true,"installed":bool,"running":bool,"settings":{...,"addrs":[...]}}
 #   webui.sh set B64JSON     保存设置（字段见 mihomo-webd set），并按 enabled 启停服务；
-#                            端口或局域网监听变化时由运行中的服务自己换到新地址（每秒检查一次设置）
+#                            端口或局域网监听变化时由运行中的服务自己换到新地址（保存后发 SIGHUP 通知它）
 #   webui.sh passwd B64      设置密码（空串清除）
 #   webui.sh start|stop|restart
 #   webui.sh boot            开机时由 service.sh 调用：启用时启动
@@ -30,7 +30,12 @@ status() {
 # 设置变化后让服务与 enabled 一致。端口、局域网监听变化不用重启：运行中的服务会自己换到新地址并关掉旧端口
 reconcile() {
   if webd_enabled; then
-    webd_alive || { error=$(webd_start 2>&1) || fail "$error"; }
+    if webd_alive; then
+      # 通知运行中的服务立刻重新读取设置（端口、局域网监听变化时换地址）
+      kill -HUP "$webd_pid" 2>/dev/null || :
+    else
+      error=$(webd_start 2>&1) || fail "$error"
+    fi
   else
     webd_stop
   fi
