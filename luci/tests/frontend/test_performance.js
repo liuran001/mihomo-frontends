@@ -164,26 +164,38 @@ async function checkOverview() {
 		get: async endpoint => {
 			reads.push(endpoint);
 			if (legacy) throw Object.assign(new Error('HTTP 404'), { status: 404 });
+			if (endpoint === '/connections/sources') return { sources: [{ source: '192.168.1.20', upload: 10, download: 20 }] };
 			return { connectionCount: 10000, memory: 5000, uploadTotal: 1, downloadTotal: 2, exit: { chain: ['DIRECT'] }, providers: {} };
 		},
+		rpc: { devices: async () => ({ ok: true, list: [{ mac: 'aa:bb:cc:00:11:22', ip4: '192.168.1.20', name: 'phone' }] }) },
 		stream: (endpoint, callback, root) => { streams.push({ endpoint, root }); return { close() {} }; },
 		poll: (root, interval, callback) => { polls.push({ root, interval, callback }); return { close() {} }; }
 	};
+	const dl = load('mihomo/devices.js', { baseclass });
 	const view = load('view/mihomo/overview.js', {
-		view: baseclass, api, mui: { fmtBytes: String, empty: String }, chart: { sparkline: () => null }, header: {}
+		view: baseclass, api, mui: { fmtBytes: String, fmtRate: String, empty: String }, chart: { sparkline: () => null }, header: {}, dl
 	});
 	view.els = Object.fromEntries(['conns', 'dlTotal', 'ulTotal', 'connSpark', 'mem', 'memSpark', 'exit', 'exitChain', 'subs'].map(name => [name, { replaceChildren() {} }]));
 	view.connHist = [];
 	view.memHist = [];
 	view.renderSubs = () => {};
 	view.renderEbpf = () => {};
+	view.devSampler = dl.sampler();
+	view.devList = [];
+	view.devCard = { hidden: true };
+	view.els.devs = { replaceChildren() {} };
+	global.E = () => ({});
 	const root = {};
 	view.startStreams(root);
 	assert.deepStrictEqual(streams, [{ endpoint: '/traffic', root }]);
 	assert.strictEqual(polls[0].interval, 2000);
+	assert.strictEqual(polls[1].interval, 2000);
 	await polls[0].callback();
 	await Promise.all([view.refreshSlow(), view.refreshSlow()]);
-	assert.deepStrictEqual(reads, ['/connections/summary', '/overview', '/ebpf/summary']);
+	await polls[1].callback();
+	assert.deepStrictEqual(reads, ['/connections/summary', '/overview', '/ebpf/summary', '/connections/sources'],
+		'per-device traffic reads the per-source counters, not the connection table');
+	assert.strictEqual(view.devCard.hidden, false, 'devices with traffic are shown');
 	assert.strictEqual(view.els.conns.textContent, '10000');
 	const summary = view.subSummary({ count: 2000, subscriptionInfo: { Upload: 2, Download: 3, Total: 10 } });
 	assert.deepStrictEqual([summary.alive, summary.total, summary.used], [null, 2000, 5]);
@@ -193,7 +205,9 @@ async function checkOverview() {
 	legacy = true;
 	await polls[0].callback();
 	await view.refreshSlow();
-	assert.deepStrictEqual(reads, ['/connections/summary', '/overview', '/ebpf/summary'], '404 never falls back to full tables');
+	await polls[1].callback();
+	await polls[1].callback();
+	assert.deepStrictEqual(reads, ['/connections/summary', '/overview', '/ebpf/summary', '/connections/sources'], '404 never falls back to full tables');
 	assert.strictEqual(view.els.conns.textContent, '请升级内核');
 }
 

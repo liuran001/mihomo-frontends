@@ -8,6 +8,11 @@ const MODES = ['rule', 'global', 'direct'];
 const REST_EXPR = 'explode(.) | del(.mode) | del(.["log-level"])';
 const RUNTIME_EXPR = '{"mode": .mode, "log-level": .["log-level"]}';
 const CONTROLLER_EXPR = '{"ec": .["external-controller"], "secret": .secret, "ui": .["external-ui"], "ui_name": .["external-ui-name"]}';
+// 内核重载配置（PUT /configs）时不会重建的部分：控制器的地址、密钥、面板、TLS 证书、CORS、DoH。这些变了只能重启
+const HUB_EXPR = 'explode(.) | {"ec": .["external-controller"], "tls": .["external-controller-tls"], "unix": .["external-controller-unix"], ' +
+	'"pipe": .["external-controller-pipe"], "cors": .["external-controller-cors"], "doh": .["external-doh-server"], "secret": .secret, ' +
+	'"ui": .["external-ui"], "ui_name": .["external-ui-name"], "ui_url": .["external-ui-url"], "cert": .tls}';
+const EBPF_EXPR = '[(.listeners // [])[] | select(.type == "ebpf")] | length';
 // 让展开合并键的结果符合 YAML 规范（显式键优先），与 mihomo（go-yaml）一致；也关掉 yq 每次打印的提示
 const YQ_FLAGS = '--yaml-fix-merge-anchor-to-spec=true';
 
@@ -119,6 +124,18 @@ function runtime_delta(old_file, new_file) {
 	if (norm(ra['log-level'], 'info') != norm(rb['log-level'], 'info'))
 		d['log-level'] = norm(rb['log-level'], 'info');
 	return d;
+}
+
+// 两份配置里控制器相关的设置是否相同（相同才能热重载）；读不出来时按不同处理
+function hub_same(old_file, new_file) {
+	let a = query(old_file, HUB_EXPR), b = query(new_file, HUB_EXPR);
+	return a != null && b != null && sprintf('%J', a) == sprintf('%J', b);
+}
+
+// 配置里 eBPF 入站的个数；读不出来时为 null
+function ebpf_count(file) {
+	let n = query(file, EBPF_EXPR);
+	return type(n) == 'int' ? n : null;
 }
 
 /* ---------- 写回：只替换内容有变化的顶层段落 ---------- */
@@ -339,5 +356,5 @@ function commit(file, work) {
 	return (result != null && U.write_file(file, result)) ? null : '无法写回候选配置';
 }
 
-export { MODES, available, query, syntax, top_scalar, parse_listen, local_host, controller_of, runtime_delta,
+export { MODES, available, query, syntax, top_scalar, parse_listen, local_host, controller_of, runtime_delta, hub_same, ebpf_count,
 	sections, unescape_astral, edit, commit };

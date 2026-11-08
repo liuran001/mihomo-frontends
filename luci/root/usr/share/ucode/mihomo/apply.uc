@@ -309,6 +309,35 @@ function patch_runtime(delta) {
 	return r.status == 204 || r.status == 200;
 }
 
+// 让运行中的内核重新读取配置文件（PUT /configs?force=true），不重启进程；节点、规则、DNS、入站（含 eBPF）都会重建。
+// 之后等控制器恢复响应，配置里有 eBPF 入站时还要等它重新挂好（/ebpf/summary 列出入站）。
+function reload_runtime() {
+	let ctl = Y.controller_of(P.CONFIG);
+	if (!ctl?.addr)
+		return false;
+	let host = Y.local_host(ctl.addr), port = ctl.addr.port;
+	let r = U.http('PUT', host, port, '/configs?force=true', { secret: ctl.secret, body: '{}', timeout: 60000 });
+	if (r.status != 204 && r.status != 200)
+		return false;
+	let want_ebpf = (Y.ebpf_count(P.CONFIG) ?? 0) > 0;
+	let start = time();
+	while (time() - start < P.START_TIMEOUT) {
+		if (!S.running())
+			return false;
+		let v = U.http('GET', host, port, '/version', { secret: ctl.secret, timeout: 1000 });
+		if (v.status == 200) {
+			if (!want_ebpf)
+				return true;
+			let e = U.http('GET', host, port, '/ebpf/summary', { secret: ctl.secret, timeout: 2000 });
+			// 旧内核没有 summary 接口：控制器正常就算完成
+			if (e.status == 404 || (e.status == 200 && match(e.body, /"inbounds"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{/)))
+				return true;
+		}
+		sleep(1000);
+	}
+	return false;
+}
+
 function service_log() {
 	return U.tail_lines(U.run('logread -e ' + U.shq(P.LOG_TAG)).out, 50);
 }
@@ -363,6 +392,12 @@ function config_body(ctx, opts) {
 	if (!was_running && !start)
 		return finish('done', { ...extra, restarted: false, backup: backup, note: '服务未运行，新配置将在下次启动时生效' });
 
+	// 控制器设置没变时先让内核热重载，不重启进程；不成功再走下面的重启（失败时回滚备份）
+	if (was_running && !start && backup && Y.hub_same(P.BACKUP_DIR + '/' + backup, P.CONFIG)) {
+		step('reload');
+		if (reload_runtime())
+			return finish('done', { ...extra, restarted: false, reloaded: true, backup: backup });
+	}
 	if (start)
 		U.run(U.shq(P.INIT) + ' enable');
 	step(was_running ? 'restart' : 'start');

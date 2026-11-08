@@ -429,3 +429,5 @@ div.mh-actions.mh-actions-left{justify-content:flex-start}
 @media (max-width:600px){.mh-pnode{flex-wrap:wrap}.mh-pnode-actions{width:100%;justify-content:flex-end}}
 /* 不可用的按钮（如被引用的规则集、策略组的「删除」）明显置灰，避免和可点的危险按钮混淆；悬停看 title 里的原因 */
 .mh button[disabled],.mh .cbi-button[disabled]{opacity:.4;filter:grayscale(1);cursor:not-allowed}
+.mh-muted{color:var(--text-muted,var(--text-color-medium,#5f666d));font-size:.78rem}
+.mh .mh-toolbar input.mh-dev-input{flex:1 1 280px;min-width:0;width:auto}

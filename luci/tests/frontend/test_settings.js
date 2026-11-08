@@ -61,3 +61,4 @@ assert.strictEqual(st.tsIdentity({ state: 'Running' }, savedIdentity).login, nul
 assert.strictEqual(st.tsIdentity({ state: 'Running', login: 'device-owner@example.invalid' }, savedIdentity).login, 'device-owner@example.invalid');
 assert.strictEqual(st.tsIdentity({ state: 'NotStarted' }, savedIdentity), savedIdentity);
 assert.strictEqual(st.tsIdentity(null, savedIdentity), savedIdentity);
+

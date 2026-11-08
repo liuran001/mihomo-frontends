@@ -23,6 +23,12 @@
 		"action": { "type": "view", "path": "mihomo/connections" },
 		"depends": { "acl": [ "luci-app-mihomo" ] }
 	},
+	"admin/services/mihomo/devices": {
+		"title": "设备",
+		"order": 35,
+		"action": { "type": "view", "path": "mihomo/devices" },
+		"depends": { "acl": [ "luci-app-mihomo" ] }
+	},
 	"admin/services/mihomo/providers": {
 		"title": "订阅与节点",
 		"order": 40,

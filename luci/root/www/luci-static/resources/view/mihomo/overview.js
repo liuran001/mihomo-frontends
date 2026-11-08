@@ -4,6 +4,7 @@
 'require mihomo.ui as mui';
 'require mihomo.chart as chart';
 'require mihomo.header as header';
+'require mihomo.devices as dl';
 
 /* 概览：实时网速、流量与连接、内存、当前出口、连通性、eBPF 状态、订阅摘要。 */
 
@@ -153,11 +154,21 @@ return view.extend({
 		this.els.updateAll = mui.btn('全部更新', () => this.updateAll(), 'mh-btn-sm');
 		const subs = mui.card('订阅', this.els.subs, { tools: [ this.els.updateAll ] });
 
+		// 下联设备流量：有设备经代理产生过流量时才显示
+		this.els.devs = E('div', { 'class': 'mh-dev-list' });
+		this.devCard = mui.card('下联设备', this.els.devs, {
+			tools: [ E('a', { 'class': 'btn cbi-button mh-btn-sm', href: L.url('admin/services/mihomo/devices') }, '管理') ]
+		});
+		this.devCard.hidden = true;
+		this.devSampler = dl.sampler();
+		this.devList = [];
+
 		const root = E('div', { 'class': 'mh' }, [
 			header.render(),
 			speed,
 			kpis,
 			E('div', { 'class': 'mh-grid mh-pair' }, [ conn, ebpf ]),
+			this.devCard,
 			subs
 		]);
 
@@ -191,11 +202,34 @@ return view.extend({
 		}, error => {
 			this.els.conns.textContent = (error.status === 404 || error.status === 405) ? '请升级内核' : '读取失败';
 		}));
+		if (this.devPoll) this.devPoll.close();
+		// 每台设备的速率：内核只读计数器；旧内核没有接口时停止轮询。设备名称随 30 秒的慢轮询更新
+		this.devUnsupported = false;
+		this.devPoll = api.poll(root, 2000, () => this.devUnsupported ? null : api.get('/connections/sources').then(d => {
+			this.drawDevices(this.devSampler.push(d && d.sources, Date.now()));
+		}, e => {
+			if (e && (e.status === 404 || e.status === 405)) this.devUnsupported = true;
+		}));
+	},
+
+	// 下联设备卡片：按 DHCP 租约 / 邻居表认出设备，正在传输的排前面，最多 6 台
+	drawDevices(stats) {
+		const rows = this.devList.map(d => ({ d, t: dl.traffic(stats, [ d.ip4 ].concat(d.ip6 || []).filter(Boolean)) }))
+			.filter(r => r.t && r.t.up + r.t.down > 0)
+			.sort((a, b) => (b.t.downRate + b.t.upRate) - (a.t.downRate + a.t.upRate) || (b.t.up + b.t.down) - (a.t.up + a.t.down));
+		this.devCard.hidden = !rows.length;
+		if (!rows.length) return;
+		this.els.devs.replaceChildren(E('table', { 'class': 'mh-table' }, E('tbody', {}, rows.slice(0, 6).map(({ d, t }) => E('tr', {}, [
+			E('td', {}, [ E('strong', {}, d.name || d.ip4 || d.mac), E('div', { 'class': 'mh-muted' }, d.ip4 || d.mac) ]),
+			E('td', { 'class': 'mh-num' + (t.downRate + t.upRate > 0 ? ' mh-ok' : ' mh-muted') }, '↓ ' + mui.fmtRate(t.downRate) + '  ↑ ' + mui.fmtRate(t.upRate)),
+			E('td', { 'class': 'mh-num' }, mui.fmtBytes(t.up + t.down))
+		])))));
 	},
 
 	refreshSlow() {
 		if (this.slowPending) return this.slowPending;
 		this.slowPending = Promise.all([
+			api.rpc.devices().then(r => { if (r && r.ok) this.devList = r.list || []; }).catch(() => null),
 			api.get('/overview').then(data => {
 				const exit = data.exit || {}, chain = exit.chain || [];
 				const last = chain[chain.length - 1];

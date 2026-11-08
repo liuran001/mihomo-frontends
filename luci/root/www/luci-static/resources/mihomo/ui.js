@@ -160,6 +160,7 @@ const STEPS = {
 	runtime: '在线生效',
 	start: '启动服务并等待就绪',
 	restart: '重启服务并等待恢复',
+	reload: '内核热重载并等待就绪',
 	rollback: '启动失败，正在回滚',
 	done: '完成'
 };
@@ -186,7 +187,7 @@ function showJobResult(s, opts) {
 	if (s.state === 'done') {
 		ui.hideModal();
 		if (opts.success) notify(opts.success(s));
-		else notify(s.note || (s.restarted ? '已保存，服务已按新配置重启' : '已保存并生效'), s.note ? 'warning' : 'info');
+		else notify(s.note || (s.restarted ? '已保存，服务已按新配置重启' : (s.reloaded ? '已保存，内核已热重载生效' : '已保存并生效')), s.note ? 'warning' : 'info');
 		return;
 	}
 	ui.showModal(s.state === 'rolled_back' ? '已自动回滚' : (opts.failTitle || '保存失败'), [

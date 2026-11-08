@@ -18,8 +18,7 @@ const SPECS = {
 		[ 'local.bypass-exclude', 'list' ], [ 'local.bypass-port', 'list' ],
 		[ 'shared.interface', 'list' ], [ 'shared.data-plane', 'str' ], [ 'shared.dns-mode', 'str' ], [ 'shared.ipv6', 'bool' ],
 		[ 'shared.bypass-private-address', 'bool' ], [ 'shared.allow-default-upstream', 'bool' ], [ 'shared.bypass-exclude', 'list' ],
-		[ 'shared.bypass-port', 'list' ], [ 'shared.include-mac-address', 'list' ], [ 'shared.exclude-mac-address', 'list' ],
-		[ 'shared.include-source-cidr', 'list' ], [ 'shared.exclude-source-cidr', 'list' ]
+		[ 'shared.bypass-port', 'list' ]
 	],
 	basic: [
 		[ 'mixed-port', 'int' ], [ 'allow-lan', 'bool' ], [ 'bind-address', 'str' ], [ 'ipv6', 'bool' ], [ 'log-level', 'str' ],
@@ -216,11 +215,10 @@ return view.extend({
 		return Promise.all([
 			api.rpc.sections([ 'ebpf', 'basic', 'dns', 'tailscale' ]),
 			api.rpc.interfaces().catch(() => null),
-			api.rpc.devices().catch(() => null),
 			api.rpc.tailscale().catch(() => null),
 			// 内核运行时的实时状态（旧内核没有这个接口，或服务未运行时为 null）
 			api.get('/tailscale', { timeout: 6000 }).catch(() => null)
-		]).then(([ s, ifs, devs, ts, live ]) => {
+		]).then(([ s, ifs, ts, live ]) => {
 			if (!s || !s.ok) throw new Error((s && s.error) || '读取失败');
 			if (s.parse_error) {
 				this.body.replaceChildren(mui.card('', mui.empty(s.parse_error, E('a', { href: L.url('admin/services/mihomo/config') }, '打开配置文件页'))));
@@ -229,7 +227,6 @@ return view.extend({
 			this.rev = s.rev;
 			this.sec = s;
 			this.ifs = (ifs && ifs.ok && ifs.list) || [];
-			this.devs = (devs && devs.ok && devs.list) || [];
 			this.tsStatus = (ts && ts.ok && ts.list) || [];
 			this.tsLive = (live && Array.isArray(live.tailscale)) ? live.tailscale : null;
 			this.forms = {};
@@ -281,7 +278,7 @@ return view.extend({
 		note.push(E('p', { 'class': 'mh-note' }, '入站「' + (sec.name || 'ebpf') + '」，角色开关写作 ' + (sec.style === 'enable' ? 'local.enable / shared.enable' : 'mode') +
 			'。关闭某个角色时它的其余设置保留，mihomo 会忽略。'));
 		panel.appendChild(E('div', {}, note));
-		const ifs = this.ifs, devs = this.devs, cur = getPath(d, 'shared.interface') || [];
+		const ifs = this.ifs, cur = getPath(d, 'shared.interface') || [];
 		const sets = sec.ipcidr_sets || [];
 		const curSets = d['bypass-rule-set'] || [];
 		return this.mount(panel, 'ebpf', 'ebpf', 'ebpf', d, s => {
@@ -333,17 +330,11 @@ return view.extend({
 			cur.filter(n => !ifs.some(i => i.name === n)).forEach(n => o.value(n, n + '（不存在）'));
 			role('shared', 'shared', [ [ 'packet_rewrite', 'packet_rewrite（默认）' ], [ 'socket_assign', 'socket_assign' ] ]);
 			o = s.taboption('shared', form.Flag, 'shared__allow-default-upstream', '默认出口也作为下联', '单臂旁路由：唯一的网卡既是出口又是下联时开启');
-			const macs = (tab, name, title) => {
-				o = s.taboption(tab, form.DynamicList, name, title);
-				o.datatype = 'macaddr';
-				devs.forEach(dv => o.value(dv.mac, (dv.name || dv.ip4 || dv.mac) + '（' + dv.mac + (dv.ip4 ? '，' + dv.ip4 : '') + '）'));
-			};
-			macs('shared', 'shared__include-mac-address', '只代理这些设备（MAC）');
-			macs('shared', 'shared__exclude-mac-address', '不代理这些设备（MAC）');
-			o = s.taboption('shared', form.DynamicList, 'shared__include-source-cidr', '只代理这些来源地址');
-			o.datatype = 'ipaddr';
-			o = s.taboption('shared', form.DynamicList, 'shared__exclude-source-cidr', '不代理这些来源地址');
-			o.datatype = 'ipaddr';
+		}).then(() => {
+			panel.appendChild(mui.card('下联设备名单', E('p', { 'class': 'mh-note' }, [
+				'逐台选择下联设备走不走代理（黑 / 白名单），以及每台设备的速率与流量，在 ',
+				E('a', { href: L.url('admin/services/mihomo/devices') }, '「设备」页'), '。'
+			])));
 		});
 	},
 

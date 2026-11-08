@@ -90,13 +90,14 @@ ok(index(api('GET', '/configs').body, '"mode":"direct"') >= 0, 'mode.set 在线�
 eq(A.begin('patch', { ops: [{ op: 'mode.set', mode: 'x' }] }).ok, false, '非法操作在提交时拒绝');
 ok(!fs.stat(P.LOCK), '提交被拒后释放锁');
 
-// 需要重启的修改
+// 控制器设置没变的修改：内核热重载（PUT /configs），进程不变
 let cur = fs.readfile(P.CONFIG);
 r = A.begin('raw', { content: replace(cur, 'mixed-port: 17890', 'mixed-port: 17891'), rev: rev() });
 s = wait_job(r.job);
-eq([s.state, s.restarted], ['done', true], '改端口后重启并恢复');
-ok(pid() != pid0, '进程已重启');
-eq(length(A.backups()), 1, '重启前备份原配置');
+eq([s.state, s.restarted, s.reloaded], ['done', false, true], '改端口后热重载');
+eq(pid(), pid0, '热重载不重启进程');
+ok(index(api('GET', '/configs').body, '"mixed-port":17891') >= 0, '新端口已在线生效');
+eq(length(A.backups()), 1, '生效前备份原配置');
 eq(fs.readfile(P.BACKUP_DIR + '/' + A.backups()[0].name), cur, '备份内容为修改前的配置');
 eq(fs.stat(P.CONFIG).mode & 0o777, 0o600, '配置文件权限 600');
 
@@ -128,7 +129,7 @@ let want = A.backup_read(oldest.name).content;
 ok(want != null && match(want, /mixed-port: 17890\n/), '读取备份');
 r = A.begin('restore', { name: oldest.name });
 s = wait_job(r.job);
-eq([s.state, s.restarted], ['done', true], '从备份恢复并重启');
+eq([s.state, s.reloaded], ['done', true], '从备份恢复并热重载');
 eq(fs.readfile(P.CONFIG), want, '恢复为备份内容');
 for (let i = 0; i < 12; i++)
 	U.write_file(sprintf('%s/config-20200101-0000%02d.yaml', P.BACKUP_DIR, i), good);
