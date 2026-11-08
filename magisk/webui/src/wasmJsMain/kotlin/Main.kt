@@ -66,6 +66,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Home
+import top.yukonga.miuix.kmp.icon.extended.SearchDevice
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Tune
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -183,7 +184,7 @@ fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier, l
 // ---------------- 导航 ----------------
 
 /** 主标签页。 */
-private val tabs = listOf("home" to "首页", "proxies" to "代理", "settings" to "设置")
+private val tabs = listOf("home" to "首页", "proxies" to "代理", "devices" to "设备", "settings" to "设置")
 
 /** 子页面（压栈显示，带返回）。 */
 private val subPages = setOf("connections", "profile", "core", "config", "config-edit", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced", "module")
@@ -301,6 +302,7 @@ private fun TabPage(index: Int, navigator: Navigator) {
     when (tabs[index].first) {
         "home" -> HomePage(navigator::go)
         "proxies" -> ProxiesPage(onBack = null)
+        "devices" -> DevicesPage(onBack = null, onNavigate = navigator::go)
         else -> SettingsPage(navigator::go)
     }
 }
@@ -362,6 +364,7 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
                     "substore" -> SubStorePage(onBack = back)
                     "webui" -> WebUiPage(onBack = back, onNavigate = navigator::go)
                     "network" -> NetworkPage(onBack = back, onNavigate = navigator::go)
+                    "devices" -> DevicesPage(onBack = null, onNavigate = navigator::go)
                     "enhanced" -> EnhancedPage(onBack = back, onNavigate = navigator::go)
                     "setup" -> SetupWizard(firstRun = false) { navigator.back(); LiveOverview.invalidate(); ProfileState.invalidate() }
                 }
@@ -369,7 +372,7 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
         }
         if (!wide && navigator.stack.isEmpty()) {
             NavigationBar(defaultWindowInsetsPadding = false) {
-                val icons = listOf(MiuixIcons.Regular.Home, MiuixIcons.Regular.Tune, MiuixIcons.Regular.Settings)
+                val icons = listOf(MiuixIcons.Regular.Home, MiuixIcons.Regular.Tune, MiuixIcons.Regular.SearchDevice, MiuixIcons.Regular.Settings)
                 tabs.forEachIndexed { index, (route, title) ->
                     NavigationBarItem(selected = navigator.tab == route, onClick = { navigator.go(route) }, icon = icons[index], label = title)
                 }

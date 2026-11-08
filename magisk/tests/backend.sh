@@ -5,7 +5,7 @@ ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd)
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT HUP INT TERM
 mkdir -p "$TEST_DIR/module/scripts" "$TEST_DIR/bin" "$TEST_DIR/data/run"
-for script in "$ROOT"/scripts/*.sh "$ROOT"/scripts/policy-*.awk; do
+for script in "$ROOT"/scripts/*.sh "$ROOT"/scripts/policy-*.awk "$ROOT"/scripts/discovery-*.awk; do
   tr -d '\r' <"$script" >"$TEST_DIR/module/scripts/${script##*/}"
 done
 export MODDIR=$TEST_DIR/module
@@ -52,6 +52,12 @@ start_core() {
   if [ "$(setting_get tethering 0)" = 1 ] && [ -f "$RUN_DIR/fail-tether" ]; then echo 'mock tether failure' >&2; return 1; fi
   policy_render "$CONFIG" "$RUNTIME" || return 1
   touch "$RUN_DIR/fake-running"
+}
+reload_core() {
+  pid_alive || return 1
+  if grep -Eq 'FAIL_RELOAD|FAIL_START' "$RUNTIME"; then echo 'mock reload failure' >&2; return 1; fi
+  if grep -q 'mode: hybrid' "$RUNTIME" && [ -f "$RUN_DIR/fail-tether" ]; then echo 'mock tether reload failure' >&2; return 1; fi
+  cp "$RUNTIME" "$RUN_DIR/reloaded"
 }
 EOF
 
@@ -228,6 +234,72 @@ if sh "$SCRIPTS/host.sh" stage 0 'not base64!' >"$TEST_DIR/result"; then echo 'F
 if sh "$SCRIPTS/host.sh" stage x "$first" >"$TEST_DIR/result"; then echo 'FAIL bad index accepted'; exit 1; fi
 rm -f "$RUN_DIR/stage.b64"
 if sh "$SCRIPTS/host.sh" stage 1 "$second" >"$TEST_DIR/result"; then echo 'FAIL orphan chunk accepted'; exit 1; fi
+
+# 热重载：运行中走 PUT /configs；控制器设置变了或重载失败时改为重启；未运行时只保存。
+check sh "$SCRIPTS/mihomo.sh" start
+rm -f "$RUN_DIR/reloaded"
+sh "$SCRIPTS/apply.sh" "$(b64 "$(cat "$CONFIG")
+# reload-marker")" reload >"$TEST_DIR/result"
+check contains "$TEST_DIR/result" '"result":"reloaded"'
+check contains "$RUN_DIR/reloaded" '# reload-marker'
+check contains "$CONFIG" '# reload-marker'
+check test -f "$RUN_DIR/fake-running"
+rm -f "$RUN_DIR/reloaded"
+sh "$SCRIPTS/apply.sh" "$(b64 "$(sed 's/^secret:.*/secret: changed/' "$CONFIG")")" reload >"$TEST_DIR/result"
+check contains "$TEST_DIR/result" '"result":"restarted"'
+check test ! -f "$RUN_DIR/reloaded"
+check contains "$CONFIG" 'secret: changed'
+check test -f "$RUN_DIR/fake-running"
+sh "$SCRIPTS/apply.sh" "$(b64 "$(cat "$CONFIG")
+# FAIL_RELOAD")" reload >"$TEST_DIR/result"
+check contains "$TEST_DIR/result" '"result":"restarted"'
+check contains "$CONFIG" '# FAIL_RELOAD'
+check test -f "$RUN_DIR/fake-running"
+old_revision=$(file_rev "$CONFIG")
+if sh "$SCRIPTS/apply.sh" "$(b64 "$(cat "$CONFIG")
+# FAIL_RELOAD
+# FAIL_START")" reload >"$TEST_DIR/result"; then echo 'FAIL reload+start failure accepted'; exit 1; fi
+check test "$old_revision" = "$(file_rev "$CONFIG")"
+check test -f "$RUN_DIR/fake-running"
+check sh "$SCRIPTS/mihomo.sh" stop
+sh "$SCRIPTS/apply.sh" "$(b64 "$(cat "$TEST_DIR/original")")" reload >"$TEST_DIR/result"
+check contains "$TEST_DIR/result" '"result":"saved"'
+check test ! -f "$RUN_DIR/fake-running"
+# 共享设置变化时同样先热重载
+rm -f "$RUN_DIR/fail-tether"
+check sh "$SCRIPTS/mihomo.sh" start
+rm -f "$RUN_DIR/reloaded"
+check set_policy 0 1 ap0 '' off ''
+check contains "$TEST_DIR/result" '"result":"reloaded"'
+check contains "$RUN_DIR/reloaded" 'interface: ["ap0"]'
+check sh "$SCRIPTS/mihomo.sh" stop
+
+# 共享设备：邻居表里共享网卡上的设备，排除上游网卡与无效条目，补上 DHCP 主机名
+cat >"$TEST_DIR/bin/ip" <<'EOF'
+#!/bin/sh
+case "$*" in
+  'neigh show') cat "$TEST_DIR/neigh" ;;
+  *route*) printf 'default via 192.168.1.1 dev wlan0 table 1001\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$TEST_DIR/bin/ip"
+cat >"$TEST_DIR/neigh" <<'EOF'
+192.168.1.1 dev wlan0 lladdr 11:22:33:44:55:66 REACHABLE
+192.168.43.5 dev ap0 lladdr AA:BB:CC:00:11:22 STALE
+2408:8000::5 dev ap0 lladdr aa:bb:cc:00:11:22 REACHABLE
+fe80::1 dev ap0 lladdr aa:bb:cc:00:11:22 STALE
+192.168.43.9 dev ap0  FAILED
+192.168.42.7 dev rndis0 lladdr de:ad:be:ef:00:01 DELAY
+EOF
+printf '1700000 aa:bb:cc:00:11:22 192.168.43.5 Pixel-7 *\n' >"$TEST_DIR/leases"
+MIHOMO_DISCOVERY_LEASES=$TEST_DIR/leases MIHOMO_DISCOVERY_TMP_DIR=$TEST_DIR sh "$SCRIPTS/discovery.sh" clients >"$TEST_DIR/result"
+check contains "$TEST_DIR/result" '"tethering":true'
+check contains "$TEST_DIR/result" '{"mac":"aa:bb:cc:00:11:22","iface":"ap0","ipv4":"192.168.43.5","ipv6":["2408:8000::5"],"name":"Pixel-7","state":"REACHABLE"}'
+check contains "$TEST_DIR/result" '"mac":"de:ad:be:ef:00:01","iface":"rndis0"'
+if contains "$TEST_DIR/result" '11:22:33:44:55:66'; then echo 'FAIL upstream neighbour listed'; exit 1; fi
+if command -v node >/dev/null 2>&1; then check node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$TEST_DIR/result"; fi
+rm -f "$TEST_DIR/bin/ip"
 
 # 本机探测：输出合法 JSON，缺少命令时也不失败。
 sh "$SCRIPTS/host.sh" probe >"$TEST_DIR/result"

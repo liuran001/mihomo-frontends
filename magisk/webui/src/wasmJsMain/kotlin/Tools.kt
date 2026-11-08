@@ -91,11 +91,13 @@ private class ToolsWork {
     }
 }
 
-private fun toolsApplyMessage(result: JsonObject, restart: Boolean): String {
+private fun toolsApplyMessage(result: JsonObject, mode: ApplyMode): String {
     val message = result.string("message")
     return when {
         result.boolean("paused") -> "配置已保存；服务被策略暂停。${message.ifBlank { "请检查 Wi-Fi / SSID 策略。" }}"
-        restart -> "配置已保存。${message.ifBlank { "已请求启动 / 重启服务。" }}"
+        result.string("result") == "reloaded" -> "配置已保存并立即生效（内核已热重载）。"
+        mode == ApplyMode.RESTART || result.string("result") == "restarted" -> "配置已保存。${message.ifBlank { "已请求启动 / 重启服务。" }}"
+        mode == ApplyMode.RELOAD -> "配置已保存；服务未运行，启动后生效。"
         else -> "配置已保存，未启动或重启服务。${message}"
     }
 }
@@ -128,11 +130,11 @@ private object ToolsConfig {
         status = ""
     }
 
-    fun save(restart: Boolean) = work.run("检查内核中…") {
+    fun save(mode: ApplyMode) = work.run("检查内核中…") {
         val draft = content
         require(draft.isNotBlank()) { "配置不能为空。" }
         val installed = request("coreInfo").boolean("installed")
-        require(!restart || installed) { "请先在「内核」页安装内核；也可选择「仅保存」。" }
+        require(mode != ApplyMode.RESTART || installed) { "请先在「内核」页安装内核；也可选择「仅保存」。" }
         if (installed) {
             status = "校验配置中…"
             request("validate", json("content" to draft))
@@ -140,12 +142,12 @@ private object ToolsConfig {
         status = "保存配置中…"
         externalChange = true
         ToolsBackups.dirty = true
-        val result = request("apply", json("content" to draft, "restart" to restart))
+        val result = request("apply", mode.payload(draft))
         baseline = draft
         loaded = true
         externalChange = false
         ProfileState.invalidate()
-        status = toolsApplyMessage(result, restart) + if (!installed) " 内核未安装，本次未校验；安装后请先校验再启动。" else ""
+        status = toolsApplyMessage(result, mode) + if (!installed) " 内核未安装，本次未校验；安装后请先校验再启动。" else ""
     }
 }
 
@@ -361,7 +363,7 @@ fun ConfigPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
             }
         }
     }
-    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
+    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { mode -> confirmSave = false; state.save(mode) }
     ConfirmDialog(show = state.confirmRefresh, title = "放弃未保存的修改？", summary = "重新读取会覆盖当前编辑内容。", confirm = "重新读取",
         danger = true, onDismiss = { state.confirmRefresh = false }) { state.read() }
 }
@@ -432,7 +434,7 @@ fun ConfigEditorPage(onBack: () -> Unit) {
                 modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
         }
     }
-    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
+    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { mode -> confirmSave = false; state.save(mode) }
 }
 
 @Composable

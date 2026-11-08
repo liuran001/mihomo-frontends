@@ -65,6 +65,12 @@ set_policy() {
     if ! module_enabled || ! policy_allowed; then
       stop_core || { rollback_policy; fail '停止失败，设置已回滚'; }
     elif [ "$old_tethering" != "$policy_tethering" ] || [ "$old_interfaces" != "$policy_interfaces" ] || [ "$old_packages" != "$policy_packages" ]; then
+      # 先热重载（上面已按新设置渲染并校验过 policy.$$.yaml），不成功再重启
+      # （失败时下面的 start_core 会按新设置重新渲染 $RUNTIME）
+      if [ -f "$RUN_DIR/policy.$$.yaml" ] && mv -f "$RUN_DIR/policy.$$.yaml" "$RUNTIME" && reload_core 2>/dev/null; then
+        echo '{"ok":true,"result":"reloaded"}'
+        return 0
+      fi
       if ! stop_core; then rollback_policy; fail '停止失败，设置已回滚'; fi
       if ! detail=$(start_core 2>&1); then
         rollback_policy

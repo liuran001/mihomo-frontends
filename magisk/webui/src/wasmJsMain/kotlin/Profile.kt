@@ -265,7 +265,7 @@ internal object ProfileState {
     }
 
     /** 预检：在本地应用补丁并刷新界面，返回失败原因。 */
-    fun save(restart: Boolean) {
+    fun save(mode: ApplyMode) {
         val content = source ?: return
         if (!dirty || busy.isNotEmpty()) return
         busy = "生成配置…"
@@ -280,15 +280,11 @@ internal object ProfileState {
                 }
                 busy = "写入配置…"
                 markToolsConfigChanged()
-                val result = request("apply", json("content" to patched, "restart" to restart))
+                val result = request("apply", mode.payload(patched))
                 parse(patched)
                 edits = emptyMap()
                 collectionOps = emptyList()
-                notice = when {
-                    result.boolean("paused") -> "已保存；服务因 Wi-Fi 条件暂停"
-                    restart -> "已保存并重启服务"
-                    else -> "已保存，重启服务后生效"
-                }
+                notice = applyNotice(result, mode)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -422,17 +418,35 @@ fun ProfilePage(onBack: () -> Unit) {
     GroupSheet(groupTarget, onDismiss = { groupTarget = null })
     RuleSheet(ruleTarget) { ruleTarget = it }
     RuleOrderSheet(ruleSorting) { ruleSorting = false }
-    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
+    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { mode -> confirmSave = false; state.save(mode) }
+}
+
+/** 保存配置后怎样生效：热重载（默认）、重启服务、只写文件。 */
+enum class ApplyMode(val restart: Boolean, val reload: Boolean) {
+    RELOAD(false, true), RESTART(true, false), SAVE(false, false);
+
+    fun payload(content: String): JsonObject = json("content" to content, "restart" to restart, "reload" to reload)
+}
+
+/** apply 的结果说明：脚本返回 result = reloaded / restarted / saved。 */
+internal fun applyNotice(result: JsonObject, mode: ApplyMode): String = when {
+    result.boolean("paused") -> "已保存；服务因 Wi-Fi 条件暂停"
+    result.string("result") == "reloaded" -> "已保存并立即生效"
+    result.string("result") == "restarted" || mode == ApplyMode.RESTART ->
+        if (mode == ApplyMode.RELOAD) "已保存；控制器设置有变化或无法热重载，已重启服务" else "已保存并重启服务"
+    mode == ApplyMode.RELOAD -> "已保存；服务未运行，启动后生效"
+    else -> "已保存，重启服务后生效"
 }
 
 @Composable
-internal fun SaveDialog(show: Boolean, onDismiss: () -> Unit, onSave: (Boolean) -> Unit) {
-    Dialog(show = show, title = "保存配置", summary = "保存前会先校验配置，失败时不会写入。",
+internal fun SaveDialog(show: Boolean, onDismiss: () -> Unit, onSave: (ApplyMode) -> Unit) {
+    Dialog(show = show, title = "保存配置", summary = "保存前会先校验配置，失败时不会写入。立即生效时内核原地重载配置，不重启进程；改了控制器地址或密钥时会自动改为重启。",
         onDismissRequest = onDismiss) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton("保存并重启服务", onClick = { onSave(true) }, modifier = Modifier.fillMaxWidth(),
+            TextButton("保存并立即生效", onClick = { onSave(ApplyMode.RELOAD) }, modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.textButtonColorsPrimary())
-            TextButton("仅保存", onClick = { onSave(false) }, modifier = Modifier.fillMaxWidth())
+            TextButton("保存并重启服务", onClick = { onSave(ApplyMode.RESTART) }, modifier = Modifier.fillMaxWidth())
+            TextButton("仅保存", onClick = { onSave(ApplyMode.SAVE) }, modifier = Modifier.fillMaxWidth())
             TextButton("取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
         }
     }

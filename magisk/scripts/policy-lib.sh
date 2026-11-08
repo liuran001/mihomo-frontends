@@ -82,6 +82,51 @@ validate_runtime() {
   rm -f "$RUN_DIR/validation.$$.log"
 }
 
+# 只有控制器本身（地址、密钥、面板目录、TLS 证书、CORS、DoH）在内核重载配置时不会重建；
+# 输出这些顶层段落的原文，新旧不同就得重启而不能热重载。
+hub_sections() {
+  awk '
+    /^[^ #-][^:]*:/ { k=$0; sub(/:.*/,"",k); keep=(k ~ /^(external-controller.*|external-ui.*|external-doh-server|secret|tls)$/) }
+    keep { sub(/\r$/,""); print }
+  ' "$1" 2>/dev/null
+}
+
+# 一次探测 eBPF 入站是否就绪（/ebpf/summary 有入站）。旧内核没有 summary 时退回 /ebpf。
+ebpf_ready_once() {
+  ready=$(tool curl -sS --max-time 2 --unix-socket "$CONTROL_SOCKET" "http://localhost${readiness_endpoint:-/ebpf/summary}" -w '\n%{http_code}' 2>/dev/null)
+  readiness_code=$(printf '%s\n' "$ready" | tail -n 1)
+  if [ "${readiness_endpoint:-/ebpf/summary}" = /ebpf/summary ] && [ "$readiness_code" = 404 ]; then
+    readiness_endpoint=/ebpf
+    return 1
+  fi
+  [ "$readiness_code" = 200 ] || return 1
+  printf '%s' "$ready" | grep -Eq '"inbounds"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'
+}
+
+# 让运行中的内核重新读取 $RUNTIME（PUT /configs?force=true），不重启进程。
+# 节点、规则、DNS、监听器（含 eBPF 入站）都会按新配置重建；之后确认 eBPF 入站重新就绪。
+reload_core() {
+  pid_alive || return 1
+  reload_out=$(tool curl -sS --max-time 60 --unix-socket "$CONTROL_SOCKET" -X PUT \
+    -H 'Content-Type: application/json' --data "{\"path\":\"$RUNTIME\"}" \
+    'http://localhost/configs?force=true' -w '\n%{http_code}' 2>&1)
+  reload_code=$(printf '%s\n' "$reload_out" | tail -n 1)
+  case "$reload_code" in
+    200|204) ;;
+    *) echo "内核重载失败（HTTP $reload_code）：$(printf '%s\n' "$reload_out" | sed '$d' | tail -c 1024)" >&2; return 1 ;;
+  esac
+  readiness_endpoint=/ebpf/summary
+  reload_wait=0
+  while [ "$reload_wait" -lt "$START_TIMEOUT" ]; do
+    pid_alive || { echo '重载后内核进程退出' >&2; return 1; }
+    ebpf_ready_once && return 0
+    reload_wait=$((reload_wait + 1))
+    sleep 1
+  done
+  echo '重载后 eBPF 入站未就绪' >&2
+  return 1
+}
+
 stop_core() {
   if pid_alive; then
     stop_pid=$running_pid
@@ -124,15 +169,7 @@ start_core() {
   readiness_endpoint=/ebpf/summary
   while [ "$start_wait" -lt "$START_TIMEOUT" ]; do
     if pid_alive; then
-      ready=$(tool curl -sS --max-time 2 --unix-socket "$CONTROL_SOCKET" "http://localhost$readiness_endpoint" -w '\n%{http_code}' 2>/dev/null)
-      readiness_code=$(printf '%s\n' "$ready" | tail -n 1)
-      if [ "$readiness_endpoint" = /ebpf/summary ] && [ "$readiness_code" = 404 ]; then
-        readiness_endpoint=/ebpf
-        ready=''
-      elif [ "$readiness_code" != 200 ]; then
-        ready=''
-      fi
-      if printf '%s' "$ready" | grep -Eq '"inbounds"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'; then
+      if ebpf_ready_once; then
         pid_alive && { module_status running; return 0; }
       fi
     elif [ "$start_wait" -ge 2 ] && { [ -f "$PID_FILE" ] || [ -f "$RUN_DIR/launch-error" ]; }; then
@@ -186,6 +223,16 @@ apply_config_file() {
   if [ -f "$CONFIG" ]; then cp "$CONFIG" "$RUN_DIR/apply.$$.old" || return 1; had_config=1; fi
   old_intent=$(cat "$INTENT" 2>/dev/null)
   was_running=0; pid_alive && was_running=1
+  # reload：服务在运行时热重载；没运行时只保存；控制器设置变了（重载不会重建控制器）改为重启。
+  # 实际做了什么写到 apply.$$.result（saved / reloaded / restarted），调用方在子 shell 外读取
+  printf saved >"$RUN_DIR/apply.$$.result"
+  if [ "$apply_action" = reload ]; then
+    if [ "$was_running" != 1 ]; then
+      apply_action=''
+    elif [ "$(hub_sections "$CONFIG")" != "$(hub_sections "$apply_source")" ]; then
+      apply_action=restart
+    fi
+  fi
   cp "$apply_source" "$RUN_DIR/apply.$$.commit" || return 1
   backup_config || { echo '配置备份失败' >&2; return 1; }
   if [ "$apply_action" = restart ]; then stop_core || return 1; fi
@@ -194,7 +241,18 @@ apply_config_file() {
     echo '配置替换失败' >&2
     return 1
   fi
+  if [ "$apply_action" = reload ]; then
+    if mv -f "$RUN_DIR/apply.$$.runtime" "$RUNTIME" && reload_core 2>"$RUN_DIR/apply.$$.reload"; then
+      printf reloaded >"$RUN_DIR/apply.$$.result"
+      return 0
+    fi
+    # 热重载没成功：按重启处理（失败时回滚源配置并恢复旧服务）
+    printf '%s 热重载失败，改为重启：%s\n' "$(date '+%F %T')" "$(cat "$RUN_DIR/apply.$$.reload" 2>/dev/null)" >>"$LOG_FILE"
+    stop_core || return 1
+    apply_action=restart
+  fi
   if [ "$apply_action" = restart ]; then
+    printf restarted >"$RUN_DIR/apply.$$.result"
     if atomic_text "$INTENT" manual && reconcile_policy; then return 0; fi
     if [ "$had_config" = 1 ]; then
       mv -f "$RUN_DIR/apply.$$.old" "$CONFIG" || { echo '源配置回滚失败' >&2; return 1; }

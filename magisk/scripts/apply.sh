@@ -1,6 +1,7 @@
 #!/system/bin/sh
 # apply.sh B64 [restart]     配置内容以 base64 参数传入（≤120000 字节）
-# apply.sh --staged [restart] 使用 host.sh stage 分段写入的 run/stage.b64（大配置）
+# apply.sh B64 reload       服务运行时热重载（控制器设置变了时改为重启），未运行时只保存
+# apply.sh --staged [restart|reload] 使用 host.sh stage 分段写入的 run/stage.b64（大配置）
 . "${0%/*}/common.sh"
 . "$SCRIPTS/policy-lib.sh"
 
@@ -9,7 +10,7 @@ cleanup() { rm -f "$RUN_DIR/apply.$$."*; [ "${staged:-0}" = 0 ] || rm -f "$RUN_D
 lock_backend || fail '后台忙'
 trap cleanup EXIT
 [ -n "$1" ] || fail '缺少配置内容'
-case "${2:-}" in ''|restart) ;; *) fail '第二参数必须为 restart 或省略' ;; esac
+case "${2:-}" in ''|restart|reload) ;; *) fail '第二参数必须为 restart、reload 或省略' ;; esac
 tmp=$RUN_DIR/apply.$$.source
 staged=0
 if [ "$1" = --staged ]; then
@@ -22,4 +23,4 @@ else
 fi
 [ -s "$tmp" ] || fail '配置为空'
 detail=$(apply_config_file "$tmp" "${2:-}" 2>&1) || fail "$detail"
-echo '{"ok":true}'
+printf '{"ok":true,"result":"%s"}\n' "$(cat "$RUN_DIR/apply.$$.result" 2>/dev/null || printf saved)"

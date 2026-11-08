@@ -14,7 +14,16 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 function mockBackend() {
   const fresh = new URLSearchParams(location.search).has('fresh');
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const policy = { ok: true, autostart: false, tethering: false, tethering_interfaces: 'ap0,wlan1,rndis0,usb0,bt-pan',
+  // 系统网络共享：热点开着，USB 用的是 ncm0（不在默认共享网卡里），蓝牙未开
+  const tether = {
+    wifi: { supported: true, active: true, ifaces: ['wlan1'], state: 13 },
+    usb: { supported: true, active: true, ifaces: ['ncm0'] },
+    bluetooth: { supported: true, active: false, ifaces: [], radio: false },
+  };
+  // 每个来源 IP 的累计流量，每次读取按设备不同速度增长
+  const sources = { '192.168.43.20': [52428800, 1932735283], '2408:8000::20': [1048576, 20971520], '192.168.42.129': [8388608, 314572800] };
+  const sourceSpeed = { '192.168.43.20': [40000, 2600000], '2408:8000::20': [2000, 30000], '192.168.42.129': [9000, 120000] };
+  const policy = { ok: true, autostart: false, tethering: true, tethering_interfaces: 'ap0,wlan1,rndis0,usb0,bt-pan',
     bypass_packages: 'com.android.settings\ncom.example.music', wifi_mode: 'off', wifi_ssids: '家庭 Wi-Fi',
     current_ssid: '家庭 Wi-Fi', allowed: true };
   const apps = [
@@ -84,6 +93,21 @@ function mockBackend() {
           .map((name, i) => ({ name, kind: /^eth/.test(name) ? 'ethernet' : /^bt/.test(name) ? 'bluetooth' : /^(usb|ncm)/.test(name) ? 'usb' : 'wifi',
             present: true, state: i % 2 ? 'down' : 'up', upstream: false, suggested: false })),
       ] }; break;
+      case 'discoveryClients': result = { ok: true, tethering: policy.tethering, clients: [
+        { mac: 'aa:bb:cc:dd:ee:01', iface: 'wlan1', ipv4: '192.168.43.20', ipv6: ['2408:8000::20'], name: 'Pixel-7', state: 'REACHABLE' },
+        { mac: 'aa:bb:cc:dd:ee:02', iface: 'wlan1', ipv4: '192.168.43.31', ipv6: [], name: '', state: 'STALE' },
+        { mac: '3c:22:fb:10:aa:09', iface: 'ncm0', ipv4: '192.168.42.129', ipv6: [], name: 'MacBook-Air', state: 'REACHABLE' },
+      ] }; break;
+      case 'tetherStatus': result = { ok: true, ...tether }; break;
+      case 'tetherSet': {
+        await sleep(600);
+        const item = tether[payload.type];
+        item.active = payload.enabled;
+        item.ifaces = payload.enabled ? [{ wifi: 'wlan1', usb: 'ncm0', bluetooth: 'bt-pan' }[payload.type]] : [];
+        if (payload.type === 'wifi') item.state = payload.enabled ? 13 : 11;
+        result = { ok: true, ...tether, submitted: true };
+        break;
+      }
       case 'status': result = { ok: true, running, pid: running ? 2471 : null, rss_kb: running ? 46336 : 0, uptime: running ? 7384 : null,
         desired: 'manual', allowed: true, current_ssid: policy.current_ssid }; break;
       case 'service': running = payload.action !== 'stop'; break;
@@ -99,7 +123,7 @@ function mockBackend() {
         installed = true; coreVersion = 'alpha-smart-0cc66a1-ebpf'; result = { ok: true, version: coreVersion, tag: 'Prerelease-Alpha' }; break;
       case 'configRead': result = { ok: true, content: config, exists: !!config }; break;
       case 'validate': result = { ok: true, valid: true, output: 'configuration file test is successful' }; break;
-      case 'apply': config = payload.content || config; result = { ok: true, restarted: running }; break;
+      case 'apply': config = payload.content || config; result = { ok: true, result: payload.restart ? 'restarted' : (payload.reload && running ? 'reloaded' : 'saved') }; break;
       case 'template': result = { ok: true, content: window.__previewTemplate }; break;
       case 'importUrl': result = { ok: true, content: window.__previewRouter }; break;
       case 'configSchema': result = window.mihomoConfig.schema(payload.content); break;
@@ -222,6 +246,13 @@ function mockBackend() {
           { id: '2', chains: ['DIRECT'], rule: 'GeoIP', rulePayload: 'CN', upload: 512, download: 4096,
             start: new Date(Date.now() - 8000).toISOString(), metadata: { host: 'api.bilibili.com', network: 'tcp', destinationPort: '443', process: 'tv.danmaku.bili' } },
         ] } };
+        else if (p === '/connections/sources') {
+          for (const [ip, [up, down]] of Object.entries(sourceSpeed)) {
+            sources[ip][0] += Math.round(up * (0.6 + Math.random() * 0.8) * 2);
+            sources[ip][1] += Math.round(down * (0.6 + Math.random() * 0.8) * 2);
+          }
+          result = { ok: true, data: { sources: Object.entries(sources).map(([source, [upload, download]]) => ({ source, upload, download, connections: 3 })) } };
+        }
         else if (p === '/connections/summary') result = { ok: true, data: { uploadTotal: 41943040 + Date.now() % 1000000, downloadTotal: 734003200 + Date.now() % 10000000, connectionCount: 2, memory: 47448064 } };
         else if (p === '/overview') result = { ok: true, data: { exit: { chain: ['节点选择', '自动选择', '香港 02'], smart: false }, providers: { sample: { name: '示例订阅', vehicleType: 'HTTP', count: 6, updatedAt: new Date().toISOString(), subscriptionInfo: { Upload: 41943040, Download: 734003200, Total: 107374182400, Expire: 0 } } } } };
         else if (p === '/ebpf/summary') result = { ok: true, data: { inbounds: [{ id: 1, mode: 'hybrid', local_data_plane: 'cgroup', shared_data_plane: 'packet_rewrite', maintenance: [] }] } };

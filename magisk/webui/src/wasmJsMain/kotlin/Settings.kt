@@ -277,6 +277,38 @@ private class SettingsState(private val scope: CoroutineScope) {
             policyError = failure.message
             return
         }
+        submit(candidate)
+    }
+
+    /**
+     * 只保存共享开关与共享网卡（设备页用）：以已保存的设置为底提交，草稿里别处未保存的修改保持不动、不会被顺带保存。
+     * [add] 里的网卡追加到共享网卡，[remove] 里的移除。
+     */
+    fun applyTethering(tethering: Boolean? = null, add: List<String> = emptyList(), interfaces: List<String>? = null) {
+        if (saving || policyLoading || pickerOpen) return
+        val base = saved ?: return
+        val names = (interfaces ?: base.interfaceNames()).let { list -> (list + add).distinct() }
+        val candidate = try {
+            base.copy(tethering = tethering ?: base.tethering, interfaces = names.joinToString(",")).validated()
+        } catch (failure: IllegalArgumentException) {
+            policyError = failure.message
+            return
+        }
+        if (candidate == base.normalized()) return
+        draft = draft?.copy(tethering = candidate.tethering, interfaces = candidate.interfaces)
+        submit(candidate)
+    }
+
+    /** 设备页里关闭共享网卡弹窗时：只把网卡的改动保存下来。 */
+    fun applyInterfaceDraft() {
+        val names = draft?.interfaceNames() ?: return
+        if (names != saved?.interfaceNames()) applyTethering(interfaces = names)
+    }
+
+    /** 共享网卡弹窗显示在哪一页（设置页与设备页同时在组合里，只让一处弹出）。 */
+    var interfacesHost by mutableStateOf("settings")
+
+    private fun submit(candidate: SettingsPolicy) {
         saving = true
         pendingVerification = candidate
         policyError = null
@@ -453,6 +485,32 @@ private class SettingsState(private val scope: CoroutineScope) {
 private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 private val settingsState = SettingsState(settingsScope)
 
+/** 设备页用到的共享设置：共享开关与共享网卡，改动立即保存（只保存这两项）。 */
+internal object TetherPolicy {
+    private val state get() = settingsState
+    val loaded: Boolean get() = state.saved != null
+    val enabled: Boolean? get() = state.saved?.tethering
+    val interfaces: List<String> get() = state.saved?.interfaceNames().orEmpty()
+    val busy: Boolean get() = state.saving || state.policyLoading
+    val error: String? get() = state.policyError
+    val notice: String? get() = state.notice.takeIf { !busy }
+
+    fun load() = state.loadOnce()
+    fun reload() = state.loadPolicy()
+    fun setEnabled(value: Boolean) = state.applyTethering(tethering = value)
+    fun addInterfaces(names: List<String>) = state.applyTethering(add = names)
+
+    fun openInterfaces() {
+        if (state.draft == null) return
+        state.interfacesHost = "devices"
+        state.showInterfaces = true
+        if (!state.interfacesLoaded) state.discoverInterfaces()
+    }
+
+    @Composable
+    fun Sheet() = SettingsInterfaceSheet(state, "devices")
+}
+
 
 /** 设置：运行策略（自启、共享、应用绕过、Wi-Fi 条件），改动后底部出现保存条。 */
 @Composable
@@ -484,16 +542,9 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
                 }
             }
             group("共享代理") {
-                SwitchRow("共享给其它设备", draft.tethering, "热点、USB、蓝牙共享的设备也走代理", enabled = state.editable) { value ->
-                    state.edit { it.copy(tethering = value) }
-                }
-                if (draft.tethering) {
-                    ArrowRow("共享网卡", value = draft.interfaceNames().joinToString("、"), enabled = state.editable) {
-                        state.showInterfaces = true
-                        if (!state.interfacesLoaded) state.discoverInterfaces()
-                    }
-                }
-                ArrowRow("共享高级设置", "共享方式、共享设备的 DNS、排除某些设备") { onNavigate("network") }
+                ArrowRow("热点与共享设备", "Wi-Fi 热点、USB、蓝牙共享的开关，共享设备走不走代理",
+                    value = if (state.saved?.tethering == true) "代理已开启" else "代理未开启") { onNavigate("devices") }
+                ArrowRow("共享高级设置", "共享方式、共享设备的 DNS 等") { onNavigate("network") }
             }
             group("应用绕过") {
                 val count = draft.packages.settingsPackages().size
@@ -553,7 +604,7 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
             }
         }
     }
-    SettingsInterfaceSheet(state)
+    SettingsInterfaceSheet(state, "settings")
     SettingsSsidSheet(state, onAdd = { editSsid = true })
     EditDialog(show = editSsid, title = "添加 Wi-Fi", initial = state.currentSsid, summary = "名称区分大小写",
         onDismiss = { editSsid = false }) { text ->
@@ -563,9 +614,12 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
 }
 
 @Composable
-private fun SettingsInterfaceSheet(state: SettingsState) {
+private fun SettingsInterfaceSheet(state: SettingsState, host: String) {
     val draft = state.draft
-    Sheet(show = state.showInterfaces, title = "共享网卡", onDismissRequest = { state.showInterfaces = false }) {
+    Sheet(show = state.showInterfaces && state.interfacesHost == host, title = "共享网卡", onDismissRequest = {
+        state.showInterfaces = false
+        if (host == "devices") state.applyInterfaceDraft()
+    }) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             if (state.interfacesLoading) Banner("正在探测网卡…", BannerKind.Progress)
             state.interfaceError?.let { Banner(it, BannerKind.Error) }

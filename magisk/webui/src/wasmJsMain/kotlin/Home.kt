@@ -415,6 +415,7 @@ fun HomePage(onNavigate: (String) -> Unit) {
         if (state.running == true) {
             item(key = "speed") { SpeedCard() }
             item(key = "kpis") { KpiGrid(onNavigate) }
+            if (state.policy?.boolean("tethering") == true) item(key = "devices") { DevicesCard(onNavigate) }
             item(key = "net") { ConnectivityCard() }
             item(key = "ebpf") { EbpfCard() }
             item(key = "subs") { SubsCard() }
@@ -555,6 +556,31 @@ private fun SmallAction(text: String, enabled: Boolean = true, onClick: () -> Un
     Box(Modifier.clip(RoundedCornerShape(10.dp)).background(MiuixTheme.colorScheme.secondaryContainer)
         .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 12.dp, vertical = 5.dp)) {
         Text(text, fontSize = 13.sp, color = if (enabled) MiuixTheme.colorScheme.primary else Tone.muted, fontWeight = FontWeight.Medium)
+    }
+}
+
+/** 共享设备：正在用网的排前面，可直接拨开关决定走不走代理；完整列表与热点开关在「设备」页。 */
+@Composable
+private fun DevicesCard(onNavigate: (String) -> Unit) {
+    val devices = SharedDevices
+    val active = LocalPageActive.current
+    LaunchedEffect(active) { if (active) devices.poll(share = false) }
+    val clients = devices.sortedClients()
+    HomeCard("共享设备" + if (clients.isEmpty()) "" else "（${clients.size}）", tools = { SmallAction("管理") { onNavigate("devices") } }) {
+        when {
+            devices.pending || ProfileState.busy.isNotEmpty() -> Text("正在保存并热重载…", fontSize = 12.sp, color = Tone.muted)
+            devices.localError.isNotEmpty() -> Text(devices.localError, fontSize = 12.sp, color = Tone.danger)
+            ProfileState.error.isNotEmpty() -> Text(ProfileState.error, fontSize = 12.sp, color = Tone.danger)
+        }
+        if (clients.isEmpty()) {
+            Text(if (devices.loading) "正在读取…" else "现在没有设备通过热点、USB 或蓝牙连到本机", fontSize = 13.sp, color = Tone.muted,
+                modifier = Modifier.padding(vertical = 8.dp))
+        }
+        for (client in clients.take(4)) ClientRow(client, compact = true)
+        if (clients.size > 4) {
+            Text("还有 ${clients.size - 4} 台设备", fontSize = 13.sp, color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onNavigate("devices") }.padding(vertical = 8.dp))
+        }
     }
 }
 

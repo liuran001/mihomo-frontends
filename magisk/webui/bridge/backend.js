@@ -241,11 +241,13 @@
     return { ok: true, paused: false, message: action === 'stop' ? '服务已停止' : '服务已启动' };
   }
 
-  async function apply(content, restart) {
+  // restart：停止再启动；reload：服务在运行时让内核热重载（控制器设置变了或重载失败时脚本自动改为重启），未运行时只保存
+  async function apply(content, restart, reload) {
     controllerCache = null;
     const staged = await stageConfig(content);
-    const result = await shJson('apply.sh', [staged.inline || '--staged'].concat(restart ? ['restart'] : []), 120000);
-    if (!restart) return result;
+    const action = restart ? ['restart'] : (reload ? ['reload'] : []);
+    const result = await shJson('apply.sh', [staged.inline || '--staged'].concat(action), 120000);
+    if (!restart && !(reload && result.result === 'restarted')) return result;
     const status = await readStatus('配置已保存，但无法确认服务状态：');
     if (isSSIDPaused(status)) return { ...result, paused: true, message: ssidPauseMessage(status) };
     if (status.running !== true) throw new Error('配置已保存，但服务未运行；请检查 SSID 策略和日志');
@@ -840,6 +842,7 @@
     ['moduleCheck', 'module-update.sh check', 90000], ['moduleCurrent', 'module-update.sh current'],
     ['backups', 'backup.sh list'], ['policyGet', 'policy.sh get'],
     ['discoveryInterfaces', 'discovery.sh interfaces', 15000],
+    ['discoveryClients', 'discovery.sh clients', 15000],
     ['onboardingState', 'onboarding.sh get'], ['onboardingComplete', 'onboarding.sh complete'],
     // 连通性与出口 IP 在模块所在设备上测，从别的设备打开网页时结果才有意义
     ['netCheck', 'host.sh netcheck', 20000], ['exitIp', 'host.sh exitip', 20000],
@@ -851,6 +854,12 @@
   // 模块自身升级：下载、校验后交给 root 管理器安装，安装后由 live-update.sh 立即换上新版本
   register('moduleUpgrade', ['force'], (payload) => boolean(payload.force, 'force', true),
     (payload) => shJson('module-update.sh', payload.force === true ? ['upgrade', 'force'] : ['upgrade'], 1320000));
+  // 系统网络共享（Wi-Fi 热点、USB、蓝牙）：读状态与开关
+  register('tetherStatus', [], noValidation, () => shJson('host.sh', ['tether', 'status'], 20000));
+  register('tetherSet', ['type', 'enabled'], (payload) => {
+    oneOf(payload.type, ['wifi', 'usb', 'bluetooth'], '共享类型');
+    boolean(payload.enabled, 'enabled');
+  }, (payload) => shJson('host.sh', ['tether', payload.enabled ? 'start' : 'stop', payload.type], 45000));
   register('service', ['action'], (payload) => oneOf(payload.action, ['start', 'stop', 'restart'], '服务操作'), (payload) => service(payload.action));
   register('coreInfo', [], noValidation, async () => {
     const info = await shJson('core.sh', ['info']);
@@ -875,7 +884,9 @@
     if (result.errno !== 0) throw new Error((result.stderr || result.stdout || '校验失败').trim().split('\n').slice(-5).join('\n'));
     return { ok: true };
   });
-  register('apply', ['content', 'restart'], (payload) => { text(payload.content, 'content'); boolean(payload.restart, 'restart', true); }, (payload) => apply(payload.content, payload.restart));
+  register('apply', ['content', 'restart', 'reload'], (payload) => {
+    text(payload.content, 'content'); boolean(payload.restart, 'restart', true); boolean(payload.reload, 'reload', true);
+  }, (payload) => apply(payload.content, payload.restart, payload.reload));
   for (const [name, command] of [['backupDel', 'delete'], ['backupRestore', 'restore']]) {
     register(name, ['name'], (payload) => validBackup(payload.name), (payload) => shJson('backup.sh', [command, payload.name]));
   }

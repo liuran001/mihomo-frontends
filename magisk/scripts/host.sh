@@ -10,6 +10,8 @@
 #   host.sh controller     输出配置中的 external-controller、secret、external-ui 行（原样）
 #   host.sh netcheck       在本机测各平台连通性（有 mixed-port/port 时经内核代理，与本机应用同一路由），输出毫秒
 #   host.sh exitip         在本机查询国内、海外出口 IP，输出两个服务的原始 JSON（字符串）
+#   host.sh tether status|start TYPE|stop TYPE
+#                          系统网络共享（TYPE 为 wifi、usb、bluetooth）：读状态或开关，经设备控制桥接调用 TetheringManager
 #   host.sh api METHOD URL [BODY]
 #                          请求本机控制器，密钥由环境变量 MIHOMO_SECRET 传入；输出响应体与 __MIHOMO_HTTP__:状态码
 # 网页管理（mihomo-webd）只能调用这些脚本子命令，不能执行任意 shell。
@@ -256,6 +258,19 @@ api() {
     --write-out '\n__MIHOMO_HTTP__:%{http_code}' --url "$url" "$@"
 }
 
+tether() {
+  helper=$MODDIR/bin/device-control.jar
+  [ -f "$helper" ] || fail '缺少设备控制桥接，请重新安装完整模块'
+  case "$1" in
+    status) set -- tether-status ;;
+    start|stop)
+      case "${2:-}" in wifi|usb|bluetooth) ;; *) fail '不支持的共享类型' ;; esac
+      set -- "tether-$1" "$2" ;;
+    *) fail '参数无效' ;;
+  esac
+  CLASSPATH=$helper exec app_process /system/bin mihomo.device.DeviceControl "$@"
+}
+
 case "${1:-}" in
   read-config) read_config ;;
   import-read) import_read ;;
@@ -266,6 +281,7 @@ case "${1:-}" in
   icon) [ "$#" -eq 2 ] || { echo '参数无效' >&2; exit 2; }; icon "$2" ;;
   api) [ "$#" -eq 3 ] || [ "$#" -eq 4 ] || { echo '参数无效' >&2; exit 2; }; shift; api "$@" ;;
   probe) probe ;;
+  tether) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || fail '参数无效'; tether "$2" "${3:-}" ;;
   # 连通性检测与出口 IP 在 mihomo-webd 里（webd/netcheck.go）
   netcheck|exitip) exec "$MODDIR/bin/mihomo-webd" net -data "$DATA" "$1" ;;
   fetch) [ "$#" -ge 2 ] || fail '缺少链接'; fetch "$2" "${3:-}" ;;

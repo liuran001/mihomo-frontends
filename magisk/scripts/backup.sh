@@ -36,7 +36,8 @@ case "$1" in
     ;;
   restore)
     valid_backup "$2" || fail '备份不存在或文件名无效'
-    restart=''; pid_alive && restart=restart
+    # 运行中时热重载（控制器设置不同或重载失败时自动改为重启）
+    restart=''; pid_alive && restart=reload
     detail=$(apply_config_file "$BACKUP_DIR/$2" "$restart" 2>&1) || fail "$detail"
     echo '{"ok":true}'
     ;;

@@ -85,7 +85,27 @@ discovery_interfaces() {
   printf ',"current_ssid":"%s"}\n' "$(json_escape "$discovery_ssid")"
 }
 
-case "${1:-}" in apps|interfaces) ;; *) discovery_fail '用法: discovery.sh apps|interfaces' ;; esac
+# 共享出去的设备（热点、USB、蓝牙）：邻居表 + DHCP 租约主机名，与 VPN 热点应用的做法相同
+discovery_clients() {
+  policy_load || discovery_fail '策略文件损坏'
+  printf '%s\n' "$policy_interfaces" | tr ',' '\n' >"$discovery_tmp/wanted"
+  tool timeout 5 ip -4 route show table all >"$discovery_tmp/route4" 2>/dev/null || : >"$discovery_tmp/route4"
+  tool timeout 5 ip -6 route show table all >"$discovery_tmp/route6" 2>/dev/null || : >"$discovery_tmp/route6"
+  tool awk -f "$SCRIPTS/discovery-routes.awk" "$discovery_tmp/route4" "$discovery_tmp/route6" >"$discovery_tmp/upstream" 2>/dev/null || : >"$discovery_tmp/upstream"
+  # 连着 Wi-Fi 时 wlan0 是上游；热点开在 wlan1/ap0 等网卡上
+  [ -z "$(current_ssid)" ] || printf '%s\n' wlan0 >>"$discovery_tmp/upstream"
+  : >"$discovery_tmp/leases"
+  for lease_file in ${MIHOMO_DISCOVERY_LEASES:-/data/misc/dhcp/dnsmasq.leases /data/vendor/dhcp/dnsmasq.leases}; do
+    [ -r "$lease_file" ] && cat "$lease_file" >>"$discovery_tmp/leases" 2>/dev/null
+  done
+  tool timeout 5 ip neigh show >"$discovery_tmp/neigh" 2>/dev/null || discovery_fail '无法读取邻居表（ip neigh）'
+  printf '{"ok":true,"tethering":%s,"clients":' "$([ "$policy_tethering" = 1 ] && echo true || echo false)"
+  tool awk -f "$SCRIPTS/discovery-clients.awk" scope=wanted "$discovery_tmp/wanted" scope=upstream "$discovery_tmp/upstream" \
+    scope=leases "$discovery_tmp/leases" scope=neigh "$discovery_tmp/neigh" || discovery_fail '无法解析邻居表'
+  printf '}\n'
+}
+
+case "${1:-}" in apps|interfaces|clients) ;; *) discovery_fail '用法: discovery.sh apps|interfaces|clients' ;; esac
 mkdir -p "$RUN_DIR" || discovery_fail '无法建立临时目录'
 tmp_base=${MIHOMO_DISCOVERY_TMP_DIR:-}
 if [ -z "$tmp_base" ] && [ -d /data/local/tmp ] && [ -w /data/local/tmp ]; then tmp_base=/data/local/tmp; fi
@@ -97,4 +117,5 @@ trap 'exit 1' HUP INT TERM
 case "$1" in
   apps) discovery_apps ;;
   interfaces) discovery_interfaces ;;
+  clients) discovery_clients ;;
 esac

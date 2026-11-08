@@ -28,8 +28,7 @@ private const val LISTENER = "@listener"
 
 private val localFields = listOf("local.data-plane", "fakeip-icmp", "local.ipv6", "local.bypass-private-address", "local.bypass-exclude")
 private val sharedFields = listOf("shared.data-plane", "shared.dns-mode", "shared.ipv6", "shared.bypass-private-address",
-    "shared.bypass-exclude", "shared.bypass-port",
-    "shared.exclude-mac-address", "shared.include-mac-address", "shared.exclude-source-cidr")
+    "shared.bypass-exclude", "shared.bypass-port")
 
 /** "5.10.198-android12" » 5.10 是否 ≥ 5.7。 */
 private fun kernelSupportsAssign(release: String): Boolean? {
@@ -83,8 +82,9 @@ fun NetworkPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 for (id in localFields) byId[id]?.let { field -> ConfigFieldRow(field, state.value(field)) { editing = field } }
             }
             group("热点 / USB 共享的设备", "shared") {
-                ArrowRow("共享给其它设备", "开关与共享网卡在「设置 › 共享代理」",
-                    value = when (tethering) { true -> "已开启"; false -> "已关闭"; null -> "" }) { onNavigate("settings") }
+                ArrowRow("共享给其它设备", "开关与共享网卡在「设备」页",
+                    value = when (tethering) { true -> "已开启"; false -> "已关闭"; null -> "" }) { onNavigate("devices") }
+                ArrowRow("共享设备", "按设备 MAC 或 IP 选择走不走代理（黑 / 白名单）") { onNavigate("devices") }
                 for (id in sharedFields) byId[id]?.let { field -> ConfigFieldRow(field, state.value(field)) { editing = field } }
             }
             item(key = "note") {
@@ -104,5 +104,5 @@ fun NetworkPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         }
     }
     FieldEditor(editing, onDismiss = { editing = null }) { field, value -> state.set(field, value); editing = null }
-    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { restart -> confirmSave = false; state.save(restart) }
+    SaveDialog(confirmSave, onDismiss = { confirmSave = false }) { mode -> confirmSave = false; state.save(mode) }
 }
