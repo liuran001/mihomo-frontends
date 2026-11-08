@@ -332,8 +332,9 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
             val inTab = navigator.stack.isEmpty()
             if (!wide) {
                 Box(Modifier.fillMaxSize().then(if (inTab) Modifier else HiddenLayout)) {
+                    // 不要越界回弹：在第一页 / 最后一页斜着滑时，整页会被拖出去再弹回，看起来像瞬移
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = tabs.size - 1,
-                        userScrollEnabled = inTab, key = { tabs[it].first }) { index ->
+                        userScrollEnabled = inTab, key = { tabs[it].first }, overscrollEffect = null) { index ->
                         val near = index == pager.currentPage || index == pager.targetPage
                         LaunchedEffect(near) { if (near) visited[index] = true }
                         if (near || visited[index] == true) {
