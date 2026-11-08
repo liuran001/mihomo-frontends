@@ -24,8 +24,12 @@ const MOCK_SECRET = 'preview';
 const CACHE_WWW = path.join(__dirname, '.cache/www');
 const mock = MOCK ? require('./mock') : null;
 const ROOT = path.join(__dirname, '../../root');
-const VIEWS = ['overview', 'proxies', 'connections', 'providers', 'groups', 'rules', 'settings', 'config', 'core', 'setup', 'logs'];
-const TITLES = { overview: '概览', proxies: '代理', connections: '连接', providers: '订阅与节点', groups: '策略组', rules: '规则', settings: '设置', config: '配置文件', core: '内核', setup: '设置向导', logs: '日志' };
+// 页面与标题取自真实的 LuCI 菜单（按 order 排），新增页面不用再改这里
+const MENU = Object.entries(JSON.parse(fs.readFileSync(path.join(ROOT, 'usr/share/luci/menu.d/luci-app-mihomo.json'), 'utf8')))
+	.filter(([ key, node ]) => key.startsWith('admin/services/mihomo/') && node.action && node.action.type === 'view')
+	.sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+const VIEWS = MENU.map(([ key ]) => key.split('/').pop());
+const TITLES = Object.fromEntries(MENU.map(([ key, node ]) => [ key.split('/').pop(), node.title ]));
 const LOCAL_PREFIXES = ['/luci-static/resources/mihomo/', '/luci-static/resources/view/mihomo/'];
 const SAFE_WRITES = ['validate'];
 // LuCI 运行时自身在启动时调用的只读方法，原样转发

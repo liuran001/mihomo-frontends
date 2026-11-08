@@ -60,7 +60,7 @@
 		"depends": { "acl": [ "luci-app-mihomo" ] }
 	},
 	"admin/services/mihomo/core": {
-		"title": "内核",
+		"title": "更新",
 		"order": 65,
 		"action": { "type": "view", "path": "mihomo/core" },
 		"depends": { "acl": [ "luci-app-mihomo" ] }

@@ -387,22 +387,9 @@ return view.extend({
 			o.value('memconservative', '省内存');
 			o.default = 'standard';
 		}).then(() => {
-			const btn = mui.btn('更新面板', () => this.upgradeDashboard(btn), 'cbi-button-action');
-			panel.appendChild(mui.card('面板', [
-				E('p', { 'class': 'mh-note' }, '让 mihomo 从「面板下载地址」重新下载面板（默认 zashboard）到面板目录，下载完成后刷新面板页面即可。需要服务正在运行。'),
-				E('div', { 'class': 'mh-toolbar' }, btn)
+			panel.appendChild(E('p', { 'class': 'mh-note' }, [
+				'更新面板、GEO 数据、订阅与规则集在「', E('a', { href: L.url('admin/services/mihomo/core') }, '更新'), '」页。'
 			]));
-		});
-	},
-
-	upgradeDashboard(btn) {
-		if (!this.sec.basic || !this.sec.basic['external-ui']) return mui.notify('请先填写面板目录（external-ui）并保存', 'error');
-		btn.disabled = true;
-		btn.textContent = '下载中…';
-		return api.request('POST', '/upgrade/ui', undefined, { timeout: 120000 }).then(() => mui.notify('面板已更新，刷新面板页面即可看到新版本'),
-			e => mui.notify('更新面板失败：' + e.message, 'error')).then(() => {
-			btn.disabled = false;
-			btn.textContent = '更新面板';
 		});
 	},
 

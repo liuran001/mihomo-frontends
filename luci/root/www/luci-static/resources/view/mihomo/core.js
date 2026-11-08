@@ -5,7 +5,7 @@
 'require mihomo.header as header';
 'require mihomo.corecard as corecard';
 
-/* 内核：版本与更新、回滚；下载设置（发布仓库、标签、镜像前缀）。 */
+/* 更新：内核版本与更新、回滚，下载设置（发布仓库、标签、镜像前缀）；LuCI 插件升级；面板、GEO 数据、订阅与规则集的在线更新。 */
 
 const DEFAULTS = { repo: 'liuran001/mihomo', tag: 'Prerelease-Alpha', mirror: 'https://ghfast.top/' };
 // 常见的 GitHub 下载镜像，只作输入建议，可用性随时间变化
@@ -27,6 +27,7 @@ return view.extend({
 			header.render(),
 			E('div', { 'class': 'mh-grid mh-pair' }, [ this.card.el, this.settingsCard() ]),
 			this.pluginCard(),
+			this.dataCard(),
 			mui.card('说明', E('ul', { 'class': 'mh-list' }, [
 				E('li', {}, '更新流程：获取版本号 → 下载 → 按发布页的 checksums.txt 校验 sha256 → 试运行 → 用新内核校验当前配置 → 替换并重启服务。任一步失败都不会动到正在使用的内核。'),
 				E('li', {}, '新内核启动失败时自动换回旧版本；空间足够时旧版本保留一份，可随时「回滚」。'),
@@ -37,6 +38,71 @@ return view.extend({
 		this.card.refresh();
 		this.pluginRefresh();
 		return root;
+	},
+
+	/* ---------- 内核里可在线更新的数据：面板、GEO 数据、订阅与规则集（需要服务正在运行） ---------- */
+
+	dataCard() {
+		const item = (title, help, label, run) => {
+			const b = mui.btn(label, () => this.runUpdate(b, label, run), 'mh-btn-sm');
+			return E('div', { 'class': 'mh-row', style: 'align-items:center;padding:8px 0' }, [
+				E('div', { style: 'min-width:0' }, [ E('div', {}, title), E('div', { 'class': 'mh-field-help' }, help) ]),
+				b
+			]);
+		};
+		const rows = [
+			item('面板', '从「面板下载地址」重新下载（默认 zashboard），完成后刷新面板页面', '更新面板', () => this.updateDashboard()),
+			item('GEO 数据', [ 'GeoIP、GeoSite、MMDB；下载地址在「', E('a', { href: L.url('admin/services/mihomo/settings') }, '设置 › 基础 › GEO 数据'), '」' ],
+				'更新 GEO', () => api.request('POST', '/configs/geo', undefined, { timeout: 180000 }).then(() => 'GEO 数据已更新')),
+			item('订阅', '所有在线订阅（HTTP 类型的代理集合）', '更新订阅', () => this.updateProviders('proxies', '订阅')),
+			item('规则集', '所有在线规则集（HTTP 类型的规则集合）', '更新规则集', () => this.updateProviders('rules', '规则集'))
+		];
+		const all = mui.btn('全部更新', () => this.updateAllData(all), 'mh-btn-sm cbi-button-action');
+		return mui.card('面板与数据', [ E('div', {}, rows), E('div', { 'class': 'mh-actions' }, [ all ]) ]);
+	},
+
+	runUpdate(btn, label, run) {
+		btn.disabled = true;
+		btn.textContent = '更新中…';
+		return Promise.resolve().then(run).then(msg => mui.notify(msg, /失败/.test(msg) ? 'warning' : 'info'),
+			e => mui.notify(label + '失败：' + e.message, 'error')).then(() => {
+			btn.disabled = false;
+			btn.textContent = label;
+		});
+	},
+
+	updateDashboard() {
+		return api.controller().then(c => {
+			if (!c.raw || !c.raw.ui) throw new Error('配置里没有面板目录（external-ui），可在「设置 › 基础 › 控制器与面板」填写');
+			return api.request('POST', '/upgrade/ui', undefined, { timeout: 120000 });
+		}).then(() => '面板已更新，刷新面板页面即可看到新版本');
+	},
+
+	// 逐个更新 HTTP 类型的代理集合 / 规则集合，返回汇总消息；部分失败时列出名字
+	updateProviders(kind, label) {
+		return api.get('/providers/' + kind).then(d => {
+			const names = Object.keys((d && d.providers) || {}).filter(k => d.providers[k].vehicleType === 'HTTP');
+			if (!names.length) return '没有在线' + label;
+			return Promise.all(names.map(n => api.put('/providers/' + kind + '/' + encodeURIComponent(n)).then(() => null, e => n + '（' + e.message + '）')))
+				.then(errs => {
+					errs = errs.filter(Boolean);
+					return errs.length ? label + '部分更新失败：' + errs.join('、') : label + '已全部更新（' + names.length + ' 个）';
+				});
+		});
+	},
+
+	// 依次更新，避免同时下载占满带宽；面板没配置时跳过而不算失败
+	updateAllData(btn) {
+		const steps = [
+			[ 'GEO', () => api.request('POST', '/configs/geo', undefined, { timeout: 180000 }).then(() => 'GEO 已更新') ],
+			[ '订阅', () => this.updateProviders('proxies', '订阅') ],
+			[ '规则集', () => this.updateProviders('rules', '规则集') ],
+			[ '面板', () => this.updateDashboard().catch(e => /external-ui/.test(e.message) ? '未配置面板，已跳过' : Promise.reject(e)) ]
+		];
+		const out = [];
+		return this.runUpdate(btn, '全部更新', () => steps.reduce((p, [ name, run ]) =>
+			p.then(run).then(msg => { out.push(msg); }, e => { out.push(name + '失败：' + e.message); }), Promise.resolve())
+			.then(() => out.join('；')));
 	},
 
 	/* ---------- 本插件（luci-app-mihomo-ebpf）的检查更新与一键升级 ---------- */
