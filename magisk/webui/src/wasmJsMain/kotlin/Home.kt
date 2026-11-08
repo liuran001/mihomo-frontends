@@ -566,15 +566,14 @@ private fun DevicesCard(onNavigate: (String) -> Unit) {
     val active = LocalPageActive.current
     LaunchedEffect(active) { if (active) devices.poll(share = false) }
     val clients = devices.sortedClients()
+    val saving = devices.pending || ProfileState.busy.isNotEmpty()
+    val failure = devices.localError.ifEmpty { ProfileState.error }
+    // 没有设备连着时整张卡片不显示（仍在后台按页面可见时读取，设备一连上就出现）；正在保存或出错时保留，免得看不到结果
+    if (clients.isEmpty() && !saving && failure.isEmpty()) return
     HomeCard("共享设备" + if (clients.isEmpty()) "" else "（${clients.size}）", tools = { SmallAction("管理") { onNavigate("devices") } }) {
         when {
-            devices.pending || ProfileState.busy.isNotEmpty() -> Text("正在保存并热重载…", fontSize = 12.sp, color = Tone.muted)
-            devices.localError.isNotEmpty() -> Text(devices.localError, fontSize = 12.sp, color = Tone.danger)
-            ProfileState.error.isNotEmpty() -> Text(ProfileState.error, fontSize = 12.sp, color = Tone.danger)
-        }
-        if (clients.isEmpty()) {
-            Text(if (devices.loading) "正在读取…" else "现在没有设备通过热点、USB 或蓝牙连到本机", fontSize = 13.sp, color = Tone.muted,
-                modifier = Modifier.padding(vertical = 8.dp))
+            saving -> Text("正在保存并热重载…", fontSize = 12.sp, color = Tone.muted)
+            failure.isNotEmpty() -> Text(failure, fontSize = 12.sp, color = Tone.danger)
         }
         for (client in clients.take(4)) ClientRow(client, compact = true)
         if (clients.size > 4) {

@@ -100,9 +100,9 @@ func main() {
 	case "addrs":
 		emit(map[string]any{"ok": true, "addrs": localAddrs()})
 	case "enabled":
-		// 网页管理是否启用：退出码 0 为启用。脚本不要自己 grep webui.json，增强功能里也有 enabled 字段
+		// 服务是否需要运行（网页管理或增强功能任一启用）：退出码 0 为需要。脚本不要自己 grep webui.json，增强功能里也有 enabled 字段
 		config, err := loadConfig(*configPath)
-		if err != nil || !config.Enabled {
+		if err != nil || !config.serviceNeeded() {
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -160,9 +160,8 @@ func setConfig(path, encoded string) error {
 			}
 		}
 		assign(&config.Enabled, patch.Enabled)
-		// 增强功能依赖网页管理服务：关闭网页管理时一并关闭（开启增强功能时也会打开网页管理）
+		// web scrcpy 经网页管理的端口打开，关闭网页管理时一并关闭；增强功能本身不受影响（管理器里照常可用）
 		if !config.Enabled {
-			config.Enhanced.Enabled = false
 			config.Enhanced.Scrcpy = false
 		}
 		assign(&config.LAN, patch.LAN)
@@ -193,8 +192,8 @@ func setPassword(path, encoded string) error {
 	password := string(data)
 	return updateConfig(path, func(config *Config) error {
 		if password == "" {
+			// 没有主密码时其它设备不能使用增强功能（见 enhancedAllowed），管理器里照常可用
 			config.Password = nil
-			config.Enhanced.Enabled = false
 			config.Enhanced.Scrcpy = false
 			return nil
 		}

@@ -170,7 +170,7 @@ func TestScrcpyControlProtocolAndBounds(t *testing.T) {
 
 func TestScrcpyArgumentsNeverEnableNetworkingOrIdleCapture(t *testing.T) {
 	config := EnhancedConfig{}
-	if err := config.validate(false, true); err != nil {
+	if err := config.validate(); err != nil {
 		t.Fatal(err)
 	}
 	arguments := strings.Join(scrcpyArguments(123, config), " ")

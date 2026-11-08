@@ -20,7 +20,7 @@ type EnhancedConfig struct {
 	ScrcpyBitRate int    `json:"scrcpy_bit_rate"`
 }
 
-func (config *EnhancedConfig) validate(hasPassword, requirePassword bool) error {
+func (config *EnhancedConfig) validate() error {
 	if config.ScrcpyPort == 0 {
 		config.ScrcpyPort = 8080
 	}
@@ -44,9 +44,6 @@ func (config *EnhancedConfig) validate(hasPassword, requirePassword bool) error 
 	}
 	if config.ScrcpyMaxSize < 640 || config.ScrcpyMaxSize > 1920 || config.ScrcpyFPS < 5 || config.ScrcpyFPS > 60 || config.ScrcpyBitRate < 256000 || config.ScrcpyBitRate > 8000000 {
 		return errors.New("屏幕参数超出限制：分辨率 640–1920、帧率 5–60、码率 256000–8000000")
-	}
-	if config.Enabled && (!hasPassword || !requirePassword) {
-		return errors.New("增强功能需要设置主 WebUI 密码并启用密码访问")
 	}
 	if config.Password != nil && !config.Password.valid() {
 		return errors.New("操作密码数据无效")
@@ -97,15 +94,11 @@ func setEnhancedConfig(path, encoded string) error {
 		return err
 	}
 	return updateConfig(path, func(config *Config) error {
+		// 增强功能与网页管理各自独立：只开增强功能时服务只在本机管理器的 unix socket 上提供设备控制（免操作密码），
+		// 不监听局域网；其它设备的浏览器要用增强功能，仍须开启网页管理并用主密码登录
 		if patch.Enabled != nil {
-			if *patch.Enabled && config.Password == nil {
-				return errors.New("请先设置主 WebUI 登录密码")
-			}
 			config.Enhanced.Enabled = *patch.Enabled
-			if *patch.Enabled {
-				config.RequirePassword = true
-				config.Enabled = true
-			} else {
+			if !*patch.Enabled {
 				config.Enhanced.Scrcpy = false
 			}
 		}
@@ -134,6 +127,9 @@ func setEnhancedConfig(path, encoded string) error {
 		}
 		if config.Enhanced.Scrcpy && !config.Enhanced.Enabled {
 			return errors.New("请先在本机启用增强功能")
+		}
+		if config.Enhanced.Scrcpy && !config.Enabled {
+			return errors.New("web scrcpy 在网页管理里打开，请先启用网页管理")
 		}
 		if config.Enhanced.Scrcpy && config.Enhanced.ScrcpyPort == config.Port {
 			return errors.New("web scrcpy 不能指向 WebUI 自身的端口")

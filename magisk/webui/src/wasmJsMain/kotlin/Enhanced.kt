@@ -53,6 +53,7 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
     var confirmHotspot by remember { mutableStateOf<Boolean?>(null) }
     var editScrcpyPort by remember { mutableStateOf(false) }
     var editScrcpyQuality by remember { mutableStateOf(false) }
+    var confirmEnable by remember { mutableStateOf(false) }
     val unlocked = session?.boolean("unlocked") == true
     val idle = busy.isEmpty()
 
@@ -105,14 +106,19 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         }
         if (!current.boolean("enabled")) {
             group("尚未启用", "disabled") {
-                Caption("请在手机模块管理器的「网页管理」设置中开启增强功能。开启前必须设置主 WebUI 访问密码。")
-                ArrowRow("网页管理设置") { onNavigate("webui") }
+                if (current.boolean("can_configure")) {
+                    Caption("开启后在这里直接使用，无需密码，也不需要开启网页管理。")
+                    ButtonRow { ActionButton("开启增强功能", primary = true, enabled = idle) { confirmEnable = true } }
+                } else {
+                    Caption("请在手机上的模块管理器里开启增强功能。")
+                }
+                ArrowRow("网页管理设置", "其它设备的浏览器使用增强功能需要开启网页管理并设置密码") { onNavigate("webui") }
             }
             return@Page
         }
         if (current.boolean("requires_main")) {
             group("需要主密码登录", "main-login") {
-                Caption("设备控制必须验证主 WebUI 密码，Tailnet 免密会话不能直接使用增强功能。")
+                Caption("其它设备使用设备控制须设置网页管理登录密码、要求密码访问，并用主密码登录；Tailnet 免密会话不能直接使用。")
                 ButtonRow { ActionButton("使用主密码登录", primary = true) { enhancedLogin() } }
             }
             return@Page
@@ -135,7 +141,8 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         }
         group(null, "access") {
             Caption("信息仅在点击时读取，不在后台轮询。离开页面后清除短信和终端显示内容。")
-            if (current.boolean("has_password")) ButtonRow {
+            // 管理器里不需要操作密码，也就不需要锁定
+            if (current.boolean("has_password") && !current.boolean("can_configure")) ButtonRow {
                 ActionButton("立即锁定", enabled = idle) {
                     messages = null
                     terminal = null
@@ -246,6 +253,27 @@ fun EnhancedPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 }
                 if (builtin && service?.boolean("running") == true) ActionButton("停止屏幕服务", enabled = idle) {
                     operate("scrcpy-stop", "停止屏幕服务…") { notice = "已请求停止屏幕会话" }
+                }
+            }
+        }
+    }
+    ConfirmDialog(confirmEnable, "开启增强功能",
+        "可读取短信、管理热点、执行 root 终端命令。在管理器里直接使用；其它设备的浏览器还需开启网页管理并用密码登录。",
+        confirm = "开启", danger = true, onDismiss = { confirmEnable = false }) {
+        confirmEnable = false
+        if (busy.isEmpty()) {
+            busy = "开启增强功能…"
+            error = ""
+            scope.launch {
+                try {
+                    request("enhancedSet", json("settings" to json("enabled" to true)))
+                    session = request("enhanced", json("action" to "status"))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    error = failure.message ?: "开启失败"
+                } finally {
+                    busy = ""
                 }
             }
         }

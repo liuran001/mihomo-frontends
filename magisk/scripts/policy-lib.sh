@@ -1,6 +1,9 @@
 #!/system/bin/sh
 
 DEFAULT_INTERFACES=ap0,wlan1,rndis0,usb0,bt-pan
+# 「全部共享网卡」模式下固定接管的常见共享网卡名；网卡还没出现也没关系，内核会在它出现时挂上。
+# 名字不在这里的共享网卡（如 ap_br_wlan2）由 policy_shared_interfaces 按当前 /sys/class/net 补上，巡检发现新网卡时热重载。
+TETHER_CANDIDATES=ap0,ap1,swlan0,softap0,wlan1,wlan2,rndis0,rndis1,usb0,usb1,ncm0,ncm1,bt-pan,bnep0,bnep1
 
 decode_value() {
   printf '%s' "$1" | base64 -d 2>/dev/null
@@ -11,10 +14,34 @@ policy_load() {
   policy_autostart=$(setting_get autostart 0 "$policy_source")
   policy_tethering=$(setting_get tethering 0 "$policy_source")
   policy_interfaces=$(setting_get tethering_interfaces "$DEFAULT_INTERFACES" "$policy_source")
+  policy_excludes=$(setting_get tethering_exclude '' "$policy_source")
+  # 共享网卡模式：all 全部共享网卡、only 仅 tethering_interfaces、exclude 全部但排除 tethering_exclude。
+  # 旧设置没有这一项：没改过默认网卡列表的按 all，自己挑过网卡的保持 only
+  policy_tether_mode=$(setting_get tethering_mode '' "$policy_source")
+  case "$policy_tether_mode" in
+    all|only|exclude) ;;
+    *) if [ "$policy_interfaces" = "$DEFAULT_INTERFACES" ]; then policy_tether_mode=all; else policy_tether_mode=only; fi ;;
+  esac
   policy_packages=$(decode_value "$(setting_get bypass_packages_b64 '' "$policy_source")") || return 1
   policy_wifi_mode=$(setting_get wifi_mode off "$policy_source")
   policy_ssids_b64=$(setting_get wifi_ssids_b64 '' "$policy_source")
   policy_ssids=$(decode_value "$policy_ssids_b64") || return 1
+}
+
+# 实际写进 shared.interface 的网卡（逗号分隔）：only 模式即所选网卡；
+# all / exclude 模式为常见共享网卡名加上当前已出现的共享网卡，exclude 再去掉排除的网卡。
+policy_shared_interfaces() {
+  if [ "$policy_tether_mode" = only ]; then printf '%s' "$policy_interfaces"; return; fi
+  {
+    printf '%s\n' "$TETHER_CANDIDATES" | tr ',' '\n'
+    for shared_path in "${MIHOMO_DISCOVERY_SYS_NET:-/sys/class/net}"/*; do
+      printf '%s\n' "${shared_path##*/}"
+    done
+  } | awk -v excluded="$([ "$policy_tether_mode" = exclude ] && printf '%s' "$policy_excludes")" '
+    BEGIN { count=split(excluded, list, ","); for (pos=1; pos<=count; pos++) skip[list[pos]]=1 }
+    length($0)<=15 && $0 ~ /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/ && $0 ~ /^(ap[0-9]|ap_br_|softap|swlan|wlan[1-9]|rndis|usb|ncm|bt-pan|bnep)/ &&
+      !($0 in skip) && !($0 in seen) { seen[$0]=1; printf "%s%s", (n++ ? "," : ""), $0 }
+  '
 }
 
 current_ssid() {
@@ -68,7 +95,10 @@ policy_render() (
   fi
   printf '%s\n' "$policy_packages" >"$RUN_DIR/packages.$$.tmp" || exit 1
   trap 'rm -f "$RUN_DIR/packages.$$.tmp"' EXIT
-  awk -v tethering="$policy_tethering" -v interfaces="$policy_interfaces" \
+  shared_interfaces=$(policy_shared_interfaces)
+  [ "$policy_tethering" != 1 ] || [ -n "$shared_interfaces" ] || { echo '没有可接管的共享网卡：请至少保留一张网卡' >&2; exit 1; }
+  [ -n "$shared_interfaces" ] || shared_interfaces=$DEFAULT_INTERFACES
+  awk -v tethering="$policy_tethering" -v interfaces="$shared_interfaces" \
     -v packages_file="$RUN_DIR/packages.$$.tmp" -f "$SCRIPTS/policy-yaml.awk" "$render_input" >"$render_output"
 )
 
@@ -183,6 +213,22 @@ start_core() {
   return 1
 }
 
+# 全部 / 排除模式下出现了运行配置里没有的共享网卡（名字不在常见列表里的那种）：按新网卡重新渲染并热重载。
+# 只比较 shared.interface 那一行；渲染或重载失败就保持现状，下次巡检再试。
+refresh_shared_interfaces() {
+  [ "$policy_tethering" = 1 ] && [ "$policy_tether_mode" != only ] && [ -f "$RUNTIME" ] || return 0
+  wanted_shared=$(policy_shared_interfaces | awk -F, '{ for (pos=1; pos<=NF; pos++) printf "%s\"%s\"", (pos>1 ? ", " : ""), $pos }')
+  running_shared=$(awk '/^[ ]*shared:/ { inside=1; next } inside && /^[ ]*interface: \[/ { sub(/^[ ]*interface: \[/, ""); sub(/\][ ]*$/, ""); print; exit }' "$RUNTIME")
+  [ "$wanted_shared" != "$running_shared" ] || return 0
+  if policy_render "$CONFIG" "$RUN_DIR/shared.$$.yaml" && validate_runtime "$RUN_DIR/shared.$$.yaml" &&
+    mv -f "$RUN_DIR/shared.$$.yaml" "$RUNTIME" && reload_core; then
+    printf '%s 共享网卡变化，已热重载：%s\n' "$(date '+%F %T')" "$wanted_shared" >>"$LOG_FILE"
+  else
+    rm -f "$RUN_DIR/shared.$$.yaml"
+  fi
+  return 0
+}
+
 reconcile_policy() {
   boot_intent || return 1
   policy_load || return 1
@@ -198,7 +244,7 @@ reconcile_policy() {
     *) stop_core; return $? ;;
   esac
   if policy_allowed; then
-    start_core
+    start_core && refresh_shared_interfaces
   else
     stop_core || return 1
     module_status paused

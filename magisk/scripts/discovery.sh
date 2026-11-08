@@ -88,7 +88,7 @@ discovery_interfaces() {
 # 共享出去的设备（热点、USB、蓝牙）：邻居表 + DHCP 租约主机名，与 VPN 热点应用的做法相同
 discovery_clients() {
   policy_load || discovery_fail '策略文件损坏'
-  printf '%s\n' "$policy_interfaces" | tr ',' '\n' >"$discovery_tmp/wanted"
+  policy_shared_interfaces | tr ',' '\n' >"$discovery_tmp/wanted"
   tool timeout 5 ip -4 route show table all >"$discovery_tmp/route4" 2>/dev/null || : >"$discovery_tmp/route4"
   tool timeout 5 ip -6 route show table all >"$discovery_tmp/route6" 2>/dev/null || : >"$discovery_tmp/route6"
   tool awk -f "$SCRIPTS/discovery-routes.awk" "$discovery_tmp/route4" "$discovery_tmp/route6" >"$discovery_tmp/upstream" 2>/dev/null || : >"$discovery_tmp/upstream"

@@ -19,6 +19,8 @@ func encodedJSON(value string) string {
 func enhancedFixture(t *testing.T, independent bool) (*fixture, *http.Cookie) {
 	t.Helper()
 	config := defaultConfig()
+	// 网页管理与增强功能都开着（两者已各自独立，这里测的是其它设备经网页管理使用增强功能）
+	config.Enabled = true
 	config.LAN, config.Tailscale, config.TailscaleNoPassword = true, true, true
 	fixture := newFixture(t, config, "main-password")
 	patch := `{"enabled":true}`
@@ -55,11 +57,35 @@ func bothCookies(mainCookie, operationCookie *http.Cookie) map[string]string {
 	return headers
 }
 
-func TestEnhancedMustBeEnabledLocallyWithMainPassword(t *testing.T) {
+// 增强功能不再依赖网页管理与主密码：管理器里直接可用（免操作密码），其它设备仍须主密码登录
+func TestEnhancedWorksInManagerWithoutWebUIOrPasswords(t *testing.T) {
 	fixture := newFixture(t, defaultConfig(), "")
-	if err := setEnhancedConfig(fixture.server.configPath, encodedJSON(`{"enabled":true}`)); err == nil {
-		t.Fatal("enabled without main password")
+	if err := setEnhancedConfig(fixture.server.configPath, encodedJSON(`{"enabled":true,"password":"operation-password"}`)); err != nil {
+		t.Fatal(err)
 	}
+	config, _ := loadConfig(fixture.server.configPath)
+	if config.Enabled || !config.Enhanced.Enabled || !config.serviceNeeded() {
+		t.Fatalf("enabling enhanced must not enable web management: %+v", config)
+	}
+	_ = fixture.server.reload()
+	manager := caller{origin: originManager}
+	response := fixture.do(manager, "GET", "/api/enhanced/status", "", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"unlocked":true`) {
+		t.Fatalf("manager should be unlocked without operation password: %s", response.Body.String())
+	}
+	if code := fixture.do(manager, "POST", "/api/enhanced/lock", `{}`, apiHeaders).Code; code != http.StatusOK {
+		t.Fatalf("manager action without token rejected: %d", code)
+	}
+	if code := fixture.do(local(), "POST", "/api/enhanced/lock", `{}`, apiHeaders).Code; code != http.StatusUnauthorized {
+		t.Fatalf("TCP caller without main password reached enhanced: %d", code)
+	}
+	if err := setEnhancedConfig(fixture.server.configPath, encodedJSON(`{"scrcpy":true}`)); err == nil {
+		t.Fatal("web scrcpy enabled while web management is off")
+	}
+}
+
+func TestEnhancedRemoteAccessNeedsMainPassword(t *testing.T) {
+	fixture := newFixture(t, defaultConfig(), "")
 	for _, body := range []string{`{"enhanced":{"enabled":true}}`, `null`, `{} {}`} {
 		if err := setConfig(fixture.server.configPath, encodedJSON(body)); err == nil {
 			t.Fatalf("remote settings accepted %s", body)
@@ -73,15 +99,22 @@ func TestEnhancedMustBeEnabledLocallyWithMainPassword(t *testing.T) {
 			t.Fatalf("TCP localhost elevated %s: %d", command, response.Code)
 		}
 	}
-	if err := setConfig(fixture.server.configPath, encodedJSON(`{"require_password":false}`)); err == nil {
-		t.Fatal("removed password requirement while enhanced mode enabled")
+	if err := setConfig(fixture.server.configPath, encodedJSON(`{"require_password":false}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = fixture.server.reload()
+	if code := fixture.do(local(), "GET", "/api/enhanced/status", "", withCookie(cookie)).Code; code != http.StatusOK {
+		t.Fatalf("status: %d", code)
+	}
+	if code := fixture.do(local(), "POST", "/api/enhanced/lock", `{}`, withCookie(cookie)).Code; code != http.StatusUnauthorized {
+		t.Fatalf("passwordless web access reached enhanced: %d", code)
 	}
 	if err := setPassword(fixture.server.configPath, ""); err != nil {
 		t.Fatal(err)
 	}
 	config, _ := loadConfig(fixture.server.configPath)
-	if config.Enhanced.Enabled || config.Enhanced.Scrcpy {
-		t.Fatal("password removal did not disable enhanced access")
+	if !config.Enhanced.Enabled || config.Enhanced.Scrcpy {
+		t.Fatal("password removal should keep enhanced for the manager but turn off web scrcpy")
 	}
 }
 
@@ -143,15 +176,9 @@ func TestEnhancedTokenBoundToManagerAndRevokedBySettings(t *testing.T) {
 	if code := fixture.do(local(), "POST", "/api/enhanced/scrcpy-set", `{"enabled":true}`, headers).Code; code != http.StatusForbidden {
 		t.Fatal("manager token elevated a TCP caller")
 	}
-	managerHeaders := map[string]string{"Authorization": "Bearer " + token, "Content-Type": "application/json", "X-Mihomo-Request": "1"}
-	if code := fixture.do(manager, "POST", "/api/enhanced/scrcpy-set", `{"enabled":true}`, managerHeaders).Code; code != http.StatusOK {
-		t.Fatal("manager token not accepted over manager transport")
-	}
-	if err := setEnhancedConfig(fixture.server.configPath, encodedJSON(`{"password":"changed-password"}`)); err != nil {
-		t.Fatal(err)
-	}
-	if code := fixture.do(manager, "POST", "/api/enhanced/scrcpy-set", `{"enabled":false}`, managerHeaders).Code; code != http.StatusForbidden {
-		t.Fatal("operation password change did not invalidate old tokens")
+	// 管理器里不再需要操作密码：不带 token 也能操作
+	if code := fixture.do(manager, "POST", "/api/enhanced/scrcpy-set", `{"enabled":true}`, apiHeaders).Code; code != http.StatusOK {
+		t.Fatal("manager transport should not need the operation password")
 	}
 }
 

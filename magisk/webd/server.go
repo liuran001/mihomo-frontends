@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net"
@@ -162,7 +163,9 @@ func (s *Server) reload() error {
 			log.Printf("reload config: %v", err)
 		}
 		s.configErr = err
-		if !modified.IsZero() {
+		// 只有内容本身无效时才记住这个版本、不再重读；打不开（例如 Windows 上正好在替换文件）是暂时的，下次再试
+		var pathErr *fs.PathError
+		if !modified.IsZero() && !errors.As(err, &pathErr) {
 			s.configTime, s.configSize = modified, size
 		}
 		s.sessions = map[string]session{}
@@ -667,9 +670,18 @@ var configPollInterval = 30 * time.Second
 func (s *Server) listen(ctx context.Context, socketPath string) error {
 	defer s.shutdownScrcpy()
 	config := s.currentConfig()
-	tcp, err := listenTCP(config)
-	if err != nil {
-		return err
+	// 只开增强功能、没开网页管理时不监听 TCP，只留管理器用的 unix socket；之后开关网页管理时在下面随时打开 / 关闭
+	var tcp net.Listener
+	var err error
+	closeTCP := func() {
+		if tcp != nil {
+			tcp.Close()
+		}
+	}
+	if config.Enabled {
+		if tcp, err = listenTCP(config); err != nil {
+			return err
+		}
 	}
 	handler := s.Handler()
 	newTCPServer := func() *http.Server {
@@ -689,18 +701,18 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 	var listeners []net.Listener
 	managerPath := filepath.Join(s.dataDir, "run", "webui-manager.sock")
 	if err := os.MkdirAll(filepath.Dir(managerPath), 0o700); err != nil {
-		tcp.Close()
+		closeTCP()
 		return err
 	}
 	_ = os.Remove(managerPath)
 	manager, err := net.Listen("unix", managerPath)
 	if err != nil {
-		tcp.Close()
+		closeTCP()
 		return err
 	}
 	if err := os.Chmod(managerPath, 0o600); err != nil {
 		manager.Close()
-		tcp.Close()
+		closeTCP()
 		return err
 	}
 	defer os.Remove(managerPath)
@@ -721,27 +733,39 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 		_ = os.Remove(socketPath)
 		unix, err := net.Listen("unix", socketPath)
 		if err != nil {
-			tcp.Close()
+			closeTCP()
 			manager.Close()
 			return err
 		}
 		_ = os.Chmod(socketPath, 0o600)
 		listeners = append(listeners, unix)
+		// Tailnet 入口属于网页管理：网页管理关闭（只开增强功能）时拒绝
+		tailnet := tailscaleIdentity(handler)
 		servers = append(servers, &http.Server{
-			Handler: tailscaleIdentity(handler), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+			Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if !s.currentConfig().Enabled {
+					http.Error(writer, "网页管理未启用", http.StatusServiceUnavailable)
+					return
+				}
+				tailnet.ServeHTTP(writer, request)
+			}), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, contextKey{}, caller{origin: originTailscale})
 			},
 		})
 	}
-	log.Printf("listening on %s (unix %q)", tcp.Addr(), socketPath)
+	if tcp != nil {
+		log.Printf("listening on %s (unix %q)", tcp.Addr(), socketPath)
+	} else {
+		log.Printf("网页管理未启用，只为管理器提供增强功能（unix %q）", managerPath)
+	}
 	errs := make(chan error, len(servers)+1)
 	for index, server := range servers {
 		go func(server *http.Server, listener net.Listener) { errs <- server.Serve(listener) }(server, listeners[index])
 	}
 	// 局域网 / 本机的 TCP 服务单独管理：换端口时先在新地址监听，再关闭旧的（连同旧端口上的连接）
 	var tcpMu sync.Mutex
-	tcpServer := newTCPServer()
+	var tcpServer *http.Server
 	serveTCP := func(server *http.Server, listener net.Listener) {
 		go func() {
 			err := server.Serve(listener)
@@ -753,7 +777,10 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 			}
 		}()
 	}
-	serveTCP(tcpServer, tcp)
+	if tcp != nil {
+		tcpServer = newTCPServer()
+		serveTCP(tcpServer, tcp)
+	}
 	// 旧地址上正在处理的请求（例如保存设置的这次请求）先做完再关
 	retire := func(server *http.Server) {
 		go func() {
@@ -788,12 +815,27 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 			s.mu.Lock()
 			next := s.config
 			s.mu.Unlock()
-			if !next.Enabled {
-				log.Printf("网页管理已关闭，退出")
+			if !next.serviceNeeded() {
+				log.Printf("网页管理与增强功能都已关闭，退出")
 				close(disabled)
 				return
 			}
-			if next.Port == bound.Port && next.LAN == bound.LAN {
+			tcpMu.Lock()
+			current := tcpServer
+			tcpMu.Unlock()
+			if !next.Enabled {
+				// 只关了网页管理：停掉 TCP，增强功能继续经管理器 socket 提供
+				if current != nil {
+					tcpMu.Lock()
+					tcpServer = nil
+					tcpMu.Unlock()
+					retire(current)
+					log.Printf("网页管理已关闭，停止监听 TCP；增强功能仍可在管理器里使用")
+				}
+				bound = next
+				continue
+			}
+			if current != nil && next.Port == bound.Port && next.LAN == bound.LAN {
 				continue
 			}
 			listener, err := listenTCP(next)
@@ -809,7 +851,9 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 			tcpServer = server
 			tcpMu.Unlock()
 			serveTCP(server, listener)
-			retire(old)
+			if old != nil {
+				retire(old)
+			}
 			bound = next
 			log.Printf("listening on %s", listener.Addr())
 		}
@@ -824,7 +868,9 @@ func (s *Server) listen(ctx context.Context, socketPath string) error {
 	last := tcpServer
 	tcpServer = nil
 	tcpMu.Unlock()
-	_ = last.Close()
+	if last != nil {
+		_ = last.Close()
+	}
 	for _, server := range servers {
 		_ = server.Close()
 	}

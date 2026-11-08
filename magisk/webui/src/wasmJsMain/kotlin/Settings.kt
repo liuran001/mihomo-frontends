@@ -53,7 +53,6 @@ import top.yukonga.miuix.kmp.icon.extended.Layers
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.File
 import top.yukonga.miuix.kmp.icon.extended.Notes
-import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Backup
 import top.yukonga.miuix.kmp.preference.CheckboxPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -61,6 +60,11 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal val settingsDefaultInterfaces = listOf("ap0", "wlan1", "rndis0", "usb0", "bt-pan")
 private val settingsInterfacePattern = Regex("[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}")
 private val settingsPackagePattern = Regex("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+/** 共享网卡模式：全部共享网卡 / 仅所选网卡 / 全部但排除所选网卡。 */
+internal val settingsTetherModes = listOf("all", "only", "exclude")
+
+private fun String.interfaceList(): List<String> = split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 
 private fun String.settingsLines(): String = replace("\r\n", "\n").replace('\r', '\n')
 
@@ -74,13 +78,21 @@ private data class SettingsPolicy(
     val packages: String,
     val wifiMode: String,
     val ssids: String,
+    val tetherMode: String = "only",
+    val excludes: String = "",
+    /** 后端算出的实际接管网卡（只读，不参与比较与提交）。 */
+    val effective: String = "",
 ) {
-    fun interfaceNames(): List<String> = interfaces.split(',')
-        .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        .ifEmpty { settingsDefaultInterfaces }
+    fun interfaceNames(): List<String> = interfaces.interfaceList().ifEmpty { settingsDefaultInterfaces }
+    fun excludeNames(): List<String> = excludes.interfaceList()
+
+    /** 当前模式下弹窗里勾选的网卡：仅所选模式是接管的网卡，排除模式是排除的网卡，全部模式没有。 */
+    fun pickedNames(): List<String> = when (tetherMode) { "only" -> interfaceNames(); "exclude" -> excludeNames(); else -> emptyList() }
 
     fun normalized(): SettingsPolicy = copy(
         interfaces = interfaceNames().joinToString(","),
+        excludes = excludeNames().joinToString(","),
+        effective = "",
         packages = packages.settingsPackages().joinToString("\n"),
         ssids = ssids.settingsLines().trimEnd('\n'),
     )
@@ -88,7 +100,8 @@ private data class SettingsPolicy(
     fun validated(): SettingsPolicy {
         val candidate = normalized()
         require(candidate.wifiMode in listOf("off", "only", "exclude")) { "请选择有效的 Wi-Fi 模式。" }
-        require(candidate.interfaceNames().all { settingsInterfacePattern.matches(it) }) {
+        require(candidate.tetherMode in settingsTetherModes) { "请选择有效的共享网卡模式。" }
+        require((candidate.interfaceNames() + candidate.excludeNames()).all { settingsInterfacePattern.matches(it) }) {
             "接口须为逗号分隔的网卡名称，每个名称最多 15 个字符。"
         }
         require(candidate.packages.settingsPackages().all { settingsPackagePattern.matches(it) }) {
@@ -113,7 +126,9 @@ private data class SettingsPolicy(
     fun payload(): JsonObject = json(
         "autostart" to autostart,
         "tethering" to tethering,
+        "tethering_mode" to tetherMode,
         "tethering_interfaces" to interfaces,
+        "tethering_exclude" to excludes,
         "bypass_packages" to packages,
         "wifi_mode" to wifiMode,
         "wifi_ssids" to ssids,
@@ -127,6 +142,10 @@ private fun JsonObject.settingsPolicy(): SettingsPolicy = SettingsPolicy(
     packages = string("bypass_packages"),
     wifiMode = string("wifi_mode", "off"),
     ssids = string("wifi_ssids"),
+    // 旧后端没有模式：按原来的行为（仅所选网卡）
+    tetherMode = string("tethering_mode", "only").takeIf { it in settingsTetherModes } ?: "only",
+    excludes = string("tethering_exclude"),
+    effective = string("tethering_effective"),
 )
 
 private data class SettingsInterface(
@@ -284,25 +303,25 @@ private class SettingsState(private val scope: CoroutineScope) {
      * 只保存共享开关与共享网卡（设备页用）：以已保存的设置为底提交，草稿里别处未保存的修改保持不动、不会被顺带保存。
      * [add] 里的网卡追加到共享网卡，[remove] 里的移除。
      */
-    fun applyTethering(tethering: Boolean? = null, add: List<String> = emptyList(), interfaces: List<String>? = null) {
+    fun applyTethering(change: (SettingsPolicy) -> SettingsPolicy) {
         if (saving || policyLoading || pickerOpen) return
         val base = saved ?: return
-        val names = (interfaces ?: base.interfaceNames()).let { list -> (list + add).distinct() }
         val candidate = try {
-            base.copy(tethering = tethering ?: base.tethering, interfaces = names.joinToString(",")).validated()
+            change(base).validated()
         } catch (failure: IllegalArgumentException) {
             policyError = failure.message
             return
         }
         if (candidate == base.normalized()) return
-        draft = draft?.copy(tethering = candidate.tethering, interfaces = candidate.interfaces)
+        draft = draft?.copy(tethering = candidate.tethering, interfaces = candidate.interfaces,
+            tetherMode = candidate.tetherMode, excludes = candidate.excludes)
         submit(candidate)
     }
 
-    /** 设备页里关闭共享网卡弹窗时：只把网卡的改动保存下来。 */
+    /** 设备页里关闭共享网卡弹窗时：只把网卡模式与网卡的改动保存下来。 */
     fun applyInterfaceDraft() {
-        val names = draft?.interfaceNames() ?: return
-        if (names != saved?.interfaceNames()) applyTethering(interfaces = names)
+        val current = draft ?: return
+        applyTethering { it.copy(tetherMode = current.tetherMode, interfaces = current.interfaces, excludes = current.excludes) }
     }
 
     /** 共享网卡弹窗显示在哪一页（设置页与设备页同时在组合里，只让一处弹出）。 */
@@ -391,12 +410,22 @@ private class SettingsState(private val scope: CoroutineScope) {
 
     fun toggleInterface(name: String) {
         if (!editable || pickerOpen) return
-        val selected = draft?.interfaceNames() ?: return
+        val policy = draft ?: return
+        if (policy.tetherMode == "exclude") {
+            val excluded = policy.excludeNames()
+            edit { it.copy(excludes = (if (name in excluded) excluded - name else excluded + name).joinToString(",")) }
+            return
+        }
+        val selected = policy.interfaceNames()
         if (selected == listOf(name)) {
             policyError = "至少保留一个共享接口；空列表会被后端恢复为默认接口。若无需共享，请关闭共享开关。"
             return
         }
         edit { it.copy(interfaces = (if (name in selected) selected - name else selected + name).joinToString(",")) }
+    }
+
+    fun setTetherMode(mode: String) {
+        if (mode in settingsTetherModes) edit { it.copy(tetherMode = mode) }
     }
 
     fun addSsid(ssid: String): Boolean {
@@ -490,15 +519,39 @@ internal object TetherPolicy {
     private val state get() = settingsState
     val loaded: Boolean get() = state.saved != null
     val enabled: Boolean? get() = state.saved?.tethering
+    val mode: String get() = state.saved?.tetherMode ?: "only"
     val interfaces: List<String> get() = state.saved?.interfaceNames().orEmpty()
+    val excludes: List<String> get() = state.saved?.excludeNames().orEmpty()
+
+    /** 共享网卡这一行右侧的简短说明。 */
+    val summary: String get() = when (mode) {
+        "all" -> "全部"
+        "exclude" -> if (excludes.isEmpty()) "全部" else "排除 ${excludes.joinToString("、")}"
+        else -> interfaces.joinToString("、")
+    }
+
+    /** 这张网卡上连入的设备会不会被接管（不考虑设备名单）。 */
+    fun covers(name: String): Boolean = when (mode) {
+        "all" -> true
+        "exclude" -> name !in excludes
+        else -> name in interfaces
+    }
     val busy: Boolean get() = state.saving || state.policyLoading
     val error: String? get() = state.policyError
     val notice: String? get() = state.notice.takeIf { !busy }
 
     fun load() = state.loadOnce()
     fun reload() = state.loadPolicy()
-    fun setEnabled(value: Boolean) = state.applyTethering(tethering = value)
-    fun addInterfaces(names: List<String>) = state.applyTethering(add = names)
+    fun setEnabled(value: Boolean) = state.applyTethering { it.copy(tethering = value) }
+
+    /** 让这些网卡上的设备也走代理：仅所选模式加入所选，排除模式从排除里移除。 */
+    fun addInterfaces(names: List<String>) = state.applyTethering { policy ->
+        when (policy.tetherMode) {
+            "only" -> policy.copy(interfaces = (policy.interfaceNames() + names).distinct().joinToString(","))
+            "exclude" -> policy.copy(excludes = (policy.excludeNames() - names.toSet()).joinToString(","))
+            else -> policy
+        }
+    }
 
     fun openInterfaces() {
         if (state.draft == null) return
@@ -520,7 +573,6 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
     val draft = state.draft
     var editSsid by remember { mutableStateOf(false) }
     var dashboardError by remember { mutableStateOf("") }
-    var dashboardNotice by remember { mutableStateOf("") }
     Box(Modifier.fillMaxSize()) {
         Page(title = "设置", bottomPadding = if (state.dirty) 88.dp else 0.dp, actions = {
             BarAction(MiuixIcons.Regular.Refresh, "重新读取", enabled = !state.policyLoading && !state.saving) { state.loadPolicy() }
@@ -528,7 +580,6 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
             banner(if (state.policyLoading || state.saving) (state.notice ?: "读取中…") else "", BannerKind.Progress, "progress")
             banner(state.policyError.orEmpty(), BannerKind.Error, "error")
             banner(dashboardError, BannerKind.Error, "dashboard")
-            banner(dashboardNotice, BannerKind.Success, "dashboardNotice")
             if (!state.policyLoading && !state.saving) banner(state.notice.orEmpty(), BannerKind.Success, "notice")
             if (draft == null) {
                 if (!state.policyLoading) item(key = "retry") {
@@ -567,7 +618,7 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
             }
             group("代理与内核") {
                 ArrowRow("内核配置", "订阅、分流规则、DNS 与透明代理参数", startIcon = MiuixIcons.Regular.Tune) { onNavigate("profile") }
-                ArrowRow("内核版本", "下载、更新或回滚 mihomo 内核", startIcon = MiuixIcons.Regular.Update) { onNavigate("core") }
+                ArrowRow("更新", "模块、内核、面板、GEO 数据、订阅与规则集", startIcon = MiuixIcons.Regular.Update) { onNavigate("updates") }
                 ArrowRow("Sub-Store", "合并、筛选多个机场订阅后交给内核", startIcon = MiuixIcons.Regular.Backup) { onNavigate("substore") }
             }
             group("远程访问") {
@@ -578,18 +629,11 @@ fun SettingsPage(onNavigate: (String) -> Unit) {
                     startIcon = MiuixIcons.Regular.Info) {
                     Dashboard.open { message -> dashboardError = message }
                 }
-                ArrowRow("更新面板", if (Dashboard.upgrading) "正在下载…" else "下载最新版 zashboard（或配置里指定的面板）",
-                    startIcon = MiuixIcons.Regular.Download, enabled = !Dashboard.upgrading) {
-                    dashboardError = ""
-                    dashboardNotice = ""
-                    Dashboard.upgrade({ dashboardNotice = it }) { dashboardError = it }
-                }
             }
             group("维护") {
                 ArrowRow("配置文件与备份", "查看、导入与恢复配置", startIcon = MiuixIcons.Regular.File) { onNavigate("config") }
                 ArrowRow("日志", "排查连不上、规则不生效等问题", startIcon = MiuixIcons.Regular.Notes) { onNavigate("logs") }
                 ArrowRow("重新运行向导", "重新检测本机网络并生成配置", startIcon = MiuixIcons.Regular.Refresh) { onNavigate("setup") }
-                ArrowRow("模块更新", "检查并升级本模块，升级后立即生效", startIcon = MiuixIcons.Regular.Update) { onNavigate("module") }
             }
         }
         if (state.dirty) {
@@ -623,10 +667,22 @@ private fun SettingsInterfaceSheet(state: SettingsState, host: String) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             if (state.interfacesLoading) Banner("正在探测网卡…", BannerKind.Progress)
             state.interfaceError?.let { Banner(it, BannerKind.Error) }
-            val selected = draft?.interfaceNames().orEmpty()
+            val mode = draft?.tetherMode ?: "only"
+            TabRowWithContour(
+                tabs = listOf("全部网卡", "仅所选", "排除所选"),
+                selectedTabIndex = settingsTetherModes.indexOf(mode).coerceAtLeast(0),
+                onTabSelected = { state.setTetherMode(settingsTetherModes[it]) },
+            )
+            Spacer(Modifier.height(12.dp))
+            val selected = draft?.pickedNames().orEmpty()
             val known = state.interfaces.filter { !it.upstream }
             val names = (selected + known.map { it.name } + settingsDefaultInterfaces).distinct()
-            // 网卡多时列表在弹窗内滚动，底部说明保持可见
+            val effective = draft?.effective?.takeIf { it.isNotEmpty() && state.saved?.tetherMode == "all" }
+            if (mode == "all") {
+                Text("热点、USB、蓝牙等所有共享网卡上连入的设备都走代理，之后新出现的共享网卡也会自动接管。" +
+                    (effective?.let { "\n当前接管：${it.replace(",", "、")}" } ?: ""),
+                    fontSize = 13.sp, color = Tone.muted)
+            } else // 网卡多时列表在弹窗内滚动，底部说明保持可见
             Card(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
                 for (name in names) {
@@ -640,7 +696,8 @@ private fun SettingsInterfaceSheet(state: SettingsState, host: String) {
                         summary = summary, enabled = state.editable)
                 }
             }
-            Text("开启共享后，经由所选网卡连入的设备流量也会被代理。", fontSize = 13.sp, color = Tone.muted,
+            if (mode != "all") Text(if (mode == "exclude") "勾选的网卡上连入的设备直接上网，其余共享网卡（包括之后新出现的）都走代理。"
+                else "只有经由勾选网卡连入的设备流量会被代理。", fontSize = 13.sp, color = Tone.muted,
                 modifier = Modifier.padding(top = 12.dp))
         }
     }

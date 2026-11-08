@@ -784,6 +784,13 @@
       if (/[\x00-\x09\x0b-\x1f\x7f]/.test(payload[name]) || new TextEncoder().encode(payload[name]).length > 32768) throw new Error(name + ' 过长或含控制字符');
     }
     payload.tethering_interfaces = payload.tethering_interfaces || DEFAULT_INTERFACES;
+    // 共享网卡模式与排除网卡可省略（旧页面）：省略时后端保持原设置；两项需同时给出
+    if ((payload.tethering_mode === undefined) !== (payload.tethering_exclude === undefined)) throw new Error('tethering_mode 与 tethering_exclude 需同时提供');
+    if (payload.tethering_mode !== undefined) {
+      oneOf(payload.tethering_mode, ['all', 'only', 'exclude'], 'tethering_mode');
+      text(payload.tethering_exclude, 'tethering_exclude');
+      if (payload.tethering_exclude && payload.tethering_exclude.split(',').some((name) => !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}(?![\s\S])/.test(name))) throw new Error('排除网卡须为逗号分隔的有效网卡名称');
+    }
     if (payload.tethering_interfaces.split(',').some((name) => !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}(?![\s\S])/.test(name))) throw new Error('接口须为逗号分隔的有效网卡名称');
     if (payload.bypass_packages.split('\n').some((name) => name && (!PACKAGE_NAME.test(name) || !name.includes('.')))) throw new Error('包名格式无效');
     if (payload.wifi_ssids.split('\n').some((name) => new TextEncoder().encode(name).length > 32)) throw new Error('SSID 不能超过 32 字节');
@@ -906,9 +913,10 @@
     if (result.errno !== 0) throw new Error(result.stderr || '读取日志失败');
     return { ok: true, content: result.stdout || result.stderr || '' };
   });
-  register('policySet', ['autostart', 'tethering', 'tethering_interfaces', 'bypass_packages', 'wifi_mode', 'wifi_ssids'], validPolicy, (payload) => shJson('policy.sh', ['set',
+  register('policySet', ['autostart', 'tethering', 'tethering_mode', 'tethering_interfaces', 'tethering_exclude', 'tethering_effective', 'bypass_packages', 'wifi_mode', 'wifi_ssids'], validPolicy, (payload) => shJson('policy.sh', ['set',
     payload.autostart ? '1' : '0', payload.tethering ? '1' : '0', b64encode(payload.tethering_interfaces),
     b64encode(payload.bypass_packages), payload.wifi_mode, b64encode(payload.wifi_ssids),
+    ...(payload.tethering_mode === undefined ? [] : [payload.tethering_mode, b64encode(payload.tethering_exclude)]),
   ], 120000));
   register('controller', ['path', 'method', 'body'], validController, controller);
   register('policySsid', [], noValidation, () => shJson('policy.sh', ['ssid'], 15000));
@@ -1223,6 +1231,7 @@
       return { ok: true, url: root.location.origin + '/enhanced/scrcpy/' };
     }
     const settings = await operations.webuiStatus.run({});
+    if (!settings.settings || !settings.settings.enabled) throw new Error('web scrcpy 经网页管理的端口打开，请先启用网页管理');
     return { ok: true, url: 'http://127.0.0.1:' + settings.settings.port + '/login?next=%2F%23enhanced' };
   });
 
@@ -1345,6 +1354,29 @@
     if (!status.running) throw new Error('服务没有运行，无法更新面板');
     await controller({ path: '/upgrade/ui', method: 'POST', timeout: 120000 });
     return { ok: true };
+  });
+
+  // 更新页：GEO 数据（内核按 geox-url 重新下载）与在线订阅 / 规则集（逐个 PUT HTTP 类型的集合）
+  async function requireRunning() {
+    const status = await readStatus('');
+    if (!status.running) throw new Error('服务没有运行，无法更新');
+  }
+  register('geoUpdate', [], noValidation, async () => {
+    await requireRunning();
+    await controller({ path: '/configs/geo', method: 'POST', timeout: 180000 });
+    return { ok: true };
+  });
+  register('providersUpdate', ['kind'], (payload) => oneOf(payload.kind, ['proxies', 'rules'], 'kind'), async (payload) => {
+    await requireRunning();
+    const list = (await controller({ path: '/providers/' + payload.kind, timeout: 15000 })).data;
+    const providers = (list && list.providers) || {};
+    const names = Object.keys(providers).filter((name) => providers[name] && providers[name].vehicleType === 'HTTP');
+    const failed = [];
+    for (const name of names) {
+      try { await controller({ path: '/providers/' + payload.kind + '/' + encodeURIComponent(name), method: 'PUT', timeout: 120000 }); }
+      catch (error) { failed.push(name); }
+    }
+    return { ok: true, total: names.length, failed };
   });
 
   root.mihomoBridge = Object.freeze({

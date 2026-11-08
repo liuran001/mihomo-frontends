@@ -1622,6 +1622,28 @@ test('dashboardUpgrade asks the core to download the panel again', async () => {
   assert.match((await stopped.request('dashboardUpgrade')).error, /没有运行/);
 });
 
+test('geoUpdate and providersUpdate refresh GEO data and only HTTP providers', async () => {
+  const bridge = makeBridge({
+    status: { running: true, desired: 'manual' },
+    handler: (command) => {
+      if (command === scriptRoot + 'host.sh controller') return result('external-controller: 127.0.0.1:9090');
+      if (isCurl(command) && command.includes("'GET'") && command.includes('/providers/rules')) {
+        return result(JSON.stringify({ providers: { cn: { vehicleType: 'HTTP' }, local: { vehicleType: 'File' }, bad: { vehicleType: 'HTTP' } } }) + '\n__MIHOMO_HTTP__:200');
+      }
+      if (isCurl(command) && command.includes('/providers/rules/bad')) return result('fail\n__MIHOMO_HTTP__:500');
+      if (isCurl(command)) return result('\n__MIHOMO_HTTP__:204');
+      return undefined;
+    },
+  });
+  assert.deepEqual(await bridge.request('geoUpdate'), { ok: true });
+  assert.ok(bridge.commands.some((command) => isCurl(command) && command.includes("'POST'") && command.includes('/configs/geo')), bridge.commands.join('\n'));
+  assert.deepEqual(await bridge.request('providersUpdate', { kind: 'rules' }), { ok: true, total: 2, failed: ['bad'] });
+  assert.ok(!bridge.commands.some((command) => command.includes('/providers/rules/local')), 'file provider must not be updated');
+  assertError(await bridge.request('providersUpdate', { kind: 'x;id' }));
+  const stopped = makeBridge({ handler: () => undefined });
+  assert.match((await stopped.request('geoUpdate')).error, /没有运行/);
+});
+
 test('webui settings and password are validated and passed as Base64', async () => {
   const bridge = makeBridge();
   assert.equal((await bridge.request('webuiSet', { settings: { enabled: true, lan: true, allow_cidrs: ['192.168.1.0/24'] } })).ok, true);

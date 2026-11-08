@@ -356,6 +356,7 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
                     "profile" -> ProfilePage(onBack = back)
                     "core" -> CorePage(onBack = back)
                     "module" -> ModuleUpdatePage(onBack = back)
+                    "updates" -> UpdatesPage(onBack = back, onNavigate = navigator::go)
                     "config" -> ConfigPage(onBack = back, onNavigate = navigator::go)
                     "config-edit" -> ConfigEditorPage(onBack = back)
                     "backups" -> BackupsPage(onBack = back)

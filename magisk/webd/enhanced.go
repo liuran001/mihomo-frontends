@@ -41,12 +41,21 @@ func decodeStrict(reader io.Reader, value any) error {
 	return decoder.Decode(value)
 }
 
+// remoteEnhancedReady：其它设备的浏览器能否使用增强功能——须设置主密码、开启密码访问，并已用主密码登录。
+func (s *Server) remoteEnhancedReady(request *http.Request, config Config) bool {
+	return config.Password != nil && config.RequirePassword && s.validSession(request)
+}
+
 func (s *Server) enhancedAllowed(request *http.Request, config Config) bool {
-	if !config.Enhanced.Enabled || config.Password == nil || !config.RequirePassword {
+	if !config.Enhanced.Enabled {
 		return false
 	}
 	manager := request.Context().Value(contextKey{}).(caller).origin == originManager
-	if !manager && !s.validSession(request) {
+	// 本机模块管理器里直接打开：manager socket 只有 root 能连，已等同于本机 root 权限，不再校验操作密码
+	if manager {
+		return true
+	}
+	if !s.remoteEnhancedReady(request, config) {
 		return false
 	}
 	if config.Enhanced.Password == nil {
@@ -82,7 +91,7 @@ func (s *Server) handleEnhanced(writer http.ResponseWriter, request *http.Reques
 	if action == "status" && request.Method == http.MethodGet {
 		status := config.Enhanced.public()
 		status["ok"], status["unlocked"] = true, s.enhancedAllowed(request, config)
-		status["requires_main"], status["can_configure"] = !manager && !s.validSession(request), manager
+		status["requires_main"], status["can_configure"] = !manager && !s.remoteEnhancedReady(request, config), manager
 		status["public_access"] = config.publicAccess()
 		if status["unlocked"] == true {
 			status["screen_service"] = s.scrcpyStatus()
@@ -90,12 +99,12 @@ func (s *Server) handleEnhanced(writer http.ResponseWriter, request *http.Reques
 		writeJSON(writer, http.StatusOK, status)
 		return
 	}
-	if !config.Enhanced.Enabled || config.Password == nil || !config.RequirePassword {
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "请先在本机模块 WebUI 中启用增强功能并设置主密码"})
+	if !config.Enhanced.Enabled {
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "请先在本机模块 WebUI 中启用增强功能"})
 		return
 	}
-	if !manager && !s.validSession(request) {
-		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "增强功能必须先使用主 WebUI 密码登录"})
+	if !manager && !s.remoteEnhancedReady(request, config) {
+		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "其它设备使用增强功能须设置主 WebUI 密码、开启密码访问并登录"})
 		return
 	}
 	if request.Method != http.MethodPost || !sameOrigin(request) || !strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
@@ -206,6 +215,9 @@ func (s *Server) handleEnhanced(writer http.ResponseWriter, request *http.Reques
 				}
 				if current.Enhanced.ScrcpyPort == current.Port {
 					return errors.New("web scrcpy 不能指向 WebUI 自身的端口")
+				}
+				if current.Enhanced.Scrcpy && !current.Enabled {
+					return errors.New("web scrcpy 在网页管理里打开，请先启用网页管理")
 				}
 				if err := current.validate(); err != nil {
 					return err
@@ -322,7 +334,7 @@ func localEnhancedRequest(dataDir, action, encoded string) (map[string]any, erro
 		if err != nil {
 			return nil, err
 		}
-		if !config.Enabled || !config.Enhanced.Enabled {
+		if !config.Enhanced.Enabled {
 			status := config.Enhanced.public()
 			status["ok"], status["unlocked"], status["can_configure"], status["public_access"] = true, false, true, config.publicAccess()
 			return status, nil

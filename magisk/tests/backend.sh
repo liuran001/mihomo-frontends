@@ -107,6 +107,28 @@ check set_policy 1 1 ap0,usb0 '' exclude 'Other'
 check test -f "$RUN_DIR/fake-running"
 check contains "$RUNTIME" 'mode: hybrid'
 check contains "$RUNTIME" 'interface: ["ap0", "usb0"]'
+# 共享网卡模式：全部（常见共享网卡 + 当前出现的共享网卡）、排除所选
+mkdir -p "$TEST_DIR/sysnet/ap_br_wlan2" "$TEST_DIR/sysnet/wlan0" "$TEST_DIR/sysnet/rmnet_data0"
+export MIHOMO_DISCOVERY_SYS_NET=$TEST_DIR/sysnet
+check call_policy set 1 1 "$(b64 ap0,usb0)" '' exclude "$(b64 Other)" all ''
+check contains "$RUNTIME" 'interface: ["ap0", "ap1", "swlan0", "softap0", "wlan1", "wlan2", "rndis0", "rndis1", "usb0", "usb1", "ncm0", "ncm1", "bt-pan", "bnep0", "bnep1", "ap_br_wlan2"]'
+check call_policy get
+check contains "$TEST_DIR/result" '"tethering_mode":"all"'
+check contains "$TEST_DIR/result" '"tethering_interfaces":"ap0,usb0"'
+check call_policy set 1 1 "$(b64 ap0,usb0)" '' exclude "$(b64 Other)" exclude "$(b64 usb0,ncm0)"
+check contains "$RUNTIME" 'interface: ["ap0", "ap1", "swlan0", "softap0", "wlan1", "wlan2", "rndis0", "rndis1", "usb1", "ncm1", "bt-pan", "bnep0", "bnep1", "ap_br_wlan2"]'
+check contains "$TEST_DIR/result" '"ok":true'
+if call_policy set 1 1 "$(b64 ap0)" '' exclude "$(b64 Other)" bogus ''; then echo 'FAIL: invalid mode accepted' >&2; exit 1; fi
+if call_policy set 1 1 "$(b64 ap0)" '' exclude "$(b64 Other)" exclude "$(b64 'a;b')"; then echo 'FAIL: invalid exclude accepted' >&2; exit 1; fi
+# 旧调用方（六个参数）保持已存的模式
+check set_policy 1 1 ap0,usb0 '' exclude 'Other'
+check call_policy get
+check contains "$TEST_DIR/result" '"tethering_mode":"exclude"'
+check contains "$TEST_DIR/result" '"tethering_exclude":"usb0,ncm0"'
+# 回到仅所选，后面的用例沿用原来的行为
+check call_policy set 1 1 "$(b64 ap0,usb0)" '' exclude "$(b64 Other)" only ''
+check contains "$RUNTIME" 'interface: ["ap0", "usb0"]'
+unset MIHOMO_DISCOVERY_SYS_NET
 
 printf '%s\n' 'mWifiInfo SSID: <unknown ssid>, BSSID: <none>, Supplicant state: DISCONNECTED' >"$TEST_DIR/wifi"
 check set_policy 1 0 '' '' only AndroidWifi
@@ -308,6 +330,45 @@ check contains "$TEST_DIR/result" '"has_config":true'
 if command -v node >/dev/null 2>&1; then check node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$TEST_DIR/result"; fi
 if sh "$SCRIPTS/host.sh" fetch 'file:///etc/passwd' >"$TEST_DIR/result"; then echo 'FAIL file url accepted'; exit 1; fi
 check contains "$TEST_DIR/result" 'http(s)'
+
+# Wi-Fi 事件触发巡检：ip monitor 报出 wlan 事件后立即检查，不等 30 秒的兜底间隔；非 wlan 事件忽略；退出时清理
+check set_policy 0 0 '' '' only AndroidWifi
+cat >"$TEST_DIR/bin/flock" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat >"$TEST_DIR/bin/cmd" <<'EOF'
+#!/bin/sh
+echo x >>"$TEST_DIR/ssid-queries"
+echo 'Unknown command: status'
+EOF
+cat >"$TEST_DIR/bin/ip" <<'EOF'
+#!/bin/sh
+if [ "$1" = -o ] && [ "$2" = monitor ]; then
+  sleep 2; echo '5: rmnet_data0    inet 10.0.0.2/30 scope global rmnet_data0'
+  sleep 2; echo '3: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500'
+  exec sleep 60
+fi
+exit 1
+EOF
+chmod +x "$TEST_DIR/bin/flock" "$TEST_DIR/bin/cmd" "$TEST_DIR/bin/ip"
+: >"$TEST_DIR/ssid-queries"
+atomic_text "$INTENT" manual
+MIHOMO_POLICY_INTERVAL=30 MIHOMO_WIFI_SETTLE=0 sh "$SCRIPTS/policy.sh" watch &
+watcher=$!
+sleep 3
+queries_before_event=$(wc -l <"$TEST_DIR/ssid-queries")
+sleep 4
+queries_after_event=$(wc -l <"$TEST_DIR/ssid-queries")
+fifo_present=no; [ -p "$RUN_DIR/wifi-events" ] && fifo_present=yes
+# 先停掉巡检再断言，断言失败退出时不会留下占着输出管道的后台进程
+kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null || :
+echo "watch: before=$queries_before_event after=$queries_after_event fifo=$fifo_present"
+check test "$queries_before_event" -eq 1
+check test "$queries_after_event" -eq 2
+check test "$fifo_present" = yes
+check test ! -e "$RUN_DIR/wifi-events"
+rm -f "$TEST_DIR/bin/ip" "$TEST_DIR/bin/flock"
 
 for script in "$SCRIPTS"/*.sh; do check sh -n "$script"; done
 printf 'PASS: %s checks (portable pure tests; locks/process launch are mocked)\n' "$passed"

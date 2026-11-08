@@ -196,14 +196,13 @@ internal object SharedDevices {
     fun shareIfaces(type: String): List<String> =
         (shareItem(type)?.get("ifaces") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
 
-    /** 正在共享、却不在共享网卡里的网卡：这些网卡上的设备不会走代理。 */
+    /** 正在共享、却没被接管的网卡（仅所选模式里没选、排除模式里被排除）：这些网卡上的设备不会走代理。 */
     fun missingIfaces(): List<String> {
         if (TetherPolicy.enabled != true) return emptyList()
-        val selected = TetherPolicy.interfaces
-        return SHARE_TYPES.flatMap { shareIfaces(it.first) }.distinct().filter { it !in selected }
+        return SHARE_TYPES.flatMap { shareIfaces(it.first) }.distinct().filter { !TetherPolicy.covers(it) }
     }
 
-    /** 开关一种网络共享；开启后把新出现的共享网卡加入共享网卡，保证这些设备也走代理。 */
+    /** 开关一种网络共享；仅所选模式下开启后把新出现的共享网卡加入，保证这些设备也走代理（排除模式不自动改动用户的排除）。 */
     fun setShare(type: String, enabled: Boolean) {
         if (shareBusy.isNotEmpty()) return
         shareBusy = type
@@ -211,7 +210,7 @@ internal object SharedDevices {
         scope.launch {
             try {
                 share = request("tetherSet", json("type" to type, "enabled" to enabled))
-                if (enabled) missingIfaces().takeIf { it.isNotEmpty() }?.let { TetherPolicy.addInterfaces(it) }
+                if (enabled && TetherPolicy.mode == "only") missingIfaces().takeIf { it.isNotEmpty() }?.let { TetherPolicy.addInterfaces(it) }
                 readClients()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -584,11 +583,16 @@ fun DevicesPage(onBack: (() -> Unit)?, onNavigate: (String) -> Unit) {
                     if (value) TetherPolicy.setEnabled(true) else confirmProxyOff = true
                 }
                 if (TetherPolicy.enabled == true) {
-                    ArrowRow("共享网卡", "只有经这些网卡连入的设备走代理", value = TetherPolicy.interfaces.joinToString("、"),
-                        enabled = !TetherPolicy.busy) { TetherPolicy.openInterfaces() }
+                    ArrowRow("共享网卡", when (TetherPolicy.mode) {
+                        "all" -> "所有共享网卡上的设备都走代理"
+                        "exclude" -> "除排除的网卡外，其余共享网卡上的设备都走代理"
+                        else -> "只有经这些网卡连入的设备走代理"
+                    }, value = TetherPolicy.summary, enabled = !TetherPolicy.busy) { TetherPolicy.openInterfaces() }
                     val missing = devices.missingIfaces()
                     if (missing.isNotEmpty()) {
-                        ArrowRow("${missing.joinToString("、")} 不在共享网卡里", "经它连入的设备现在不走代理，点此加入", value = "加入",
+                        val excluded = TetherPolicy.mode == "exclude"
+                        ArrowRow("${missing.joinToString("、")} ${if (excluded) "已被排除" else "不在共享网卡里"}",
+                            "经它连入的设备现在不走代理，点此${if (excluded) "取消排除" else "加入"}", value = if (excluded) "取消排除" else "加入",
                             enabled = !TetherPolicy.busy) { TetherPolicy.addInterfaces(missing) }
                     }
                 }

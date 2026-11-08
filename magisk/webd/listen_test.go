@@ -132,8 +132,8 @@ func TestListenBusyPort(t *testing.T) {
 	<-done
 }
 
-// 关闭网页管理时增强功能一并关闭，enabled 子命令只看顶层开关
-func TestDisablingWebUIDisablesEnhanced(t *testing.T) {
+// 关闭网页管理时增强功能保留（管理器里照常可用），只关掉经网页管理打开的 web scrcpy；服务仍需运行
+func TestDisablingWebUIKeepsEnhanced(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "webui.json")
 	config := defaultConfig()
 	config.Enabled = true
@@ -150,7 +150,7 @@ func TestDisablingWebUIDisablesEnhanced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Enabled || loaded.Enhanced.Enabled || loaded.Enhanced.Scrcpy {
-		t.Fatalf("关闭网页管理后增强功能也应关闭：%+v", loaded.Enhanced)
+	if loaded.Enabled || !loaded.Enhanced.Enabled || loaded.Enhanced.Scrcpy || !loaded.serviceNeeded() {
+		t.Fatalf("关闭网页管理后应保留增强功能、关闭 web scrcpy：%+v", loaded.Enhanced)
 	}
 }

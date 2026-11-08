@@ -354,9 +354,11 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
             }
             InfoRow("服务状态", when {
                 state.pending > 0 && current.enabled != state.running -> if (current.enabled) "启动中…" else "停止中…"
+                // 只开增强功能时服务也在运行，但不监听网页端口
+                !current.enabled -> "未启用"
                 state.running -> "运行中"
                 else -> "未运行"
-            }, valueColor = if (state.running) Tone.success else Tone.muted)
+            }, valueColor = if (state.running && current.enabled) Tone.success else Tone.muted)
             ArrowRow("端口", "改动后服务会重启", value = current.port.toString(), enabled = quiet) { editPort = true }
         }
         group("登录", "login") {
@@ -364,7 +366,9 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 value = if (current.hasPassword) "已设置" else "未设置", enabled = quiet) { editPassword = true }
             if (current.hasPassword) ArrowRow("清除密码", "清除后本机与局域网免密访问；Tailnet 只能用账号免密访问", enabled = quiet) { clearPassword = true }
             SwitchRow("本机和局域网访问需要密码", current.requirePassword && current.hasPassword,
-                if (current.enhanced) "增强功能启用期间必须保留密码访问" else if (current.hasPassword) "关闭后本机应用和同一网络里的设备都能直接管理" else "设置密码后才能开启", enabled = idle && current.hasPassword && !current.enhanced) {
+                if (!current.hasPassword) "设置密码后才能开启"
+                else if (current.enhanced) "关闭后本机应用和同一网络里的设备都能直接管理，但其它设备不能再用增强功能"
+                else "关闭后本机应用和同一网络里的设备都能直接管理", enabled = idle && current.hasPassword) {
                 state.set("require_password", JsonPrimitive(it))
             }
             ArrowRow("登录有效期", "超过后需要重新输入密码", value = "${current.sessionHours} 小时", enabled = quiet) { editHours = true }
@@ -374,14 +378,16 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
                 when {
                     !state.sessionLoaded -> "正在确认访问方式"
                     state.remote -> "只能在手机的模块管理器 WebUI 中开启或关闭"
-                    !current.hasPassword -> "请先设置主 WebUI 登录密码"
-                    else -> "短信、电量、热点、终端和 web scrcpy；开启后强制主密码访问"
-                }, enabled = quiet && state.sessionLoaded && !state.remote && (current.hasPassword || current.enhanced)) {
+                    else -> "短信、电量、热点、终端；不依赖网页管理，在管理器里直接使用无需密码"
+                }, enabled = quiet && state.sessionLoaded && !state.remote) {
                 if (it) confirmEnhanced = true else state.setEnhanced(json("enabled" to false))
             }
             if (current.publicAccess) Caption("当前允许公网来源访问。强烈建议仅在局域网或 Tailscale 开启增强功能；终端和屏幕控制拥有本机管理权限。", Tone.warning)
             if (current.enhanced) {
-                ArrowRow("操作密码", if (current.operationPassword) "解锁后 15 分钟失效；修改后立即使旧操作会话失效" else "未设置时使用已验证的主 WebUI 会话",
+                if (!(current.enabled && current.hasPassword && current.requirePassword)) {
+                    Caption("其它设备的浏览器要用增强功能，需开启网页管理、设置登录密码并要求密码访问；在管理器里不受影响。")
+                }
+                ArrowRow("操作密码", if (current.operationPassword) "仅用于其它设备的浏览器，解锁后 15 分钟失效；管理器里不需要" else "其它设备未设置时使用已验证的主 WebUI 会话；管理器里不需要",
                     value = if (current.operationPassword) "独立密码" else "使用主密码", enabled = quiet && state.sessionLoaded && !state.remote) { editOperationPassword = true }
                 if (current.operationPassword) ArrowRow("清除操作密码", "仍然必须通过主 WebUI 密码登录", enabled = quiet && state.sessionLoaded && !state.remote) { clearOperationPassword = true }
                 ArrowRow("打开设备控制", "查看设备信息、短信与终端") { onNavigate("enhanced") }
@@ -491,7 +497,7 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         state.setEnhanced(json("password" to password))
     }
     ConfirmDialog(show = confirmEnhanced, title = "开启增强功能",
-        summary = "将允许已鉴权的浏览器读取短信、管理热点、执行 root 终端命令和控制屏幕。强烈建议仅在局域网或 Tailscale 使用。" +
+        summary = "在管理器里可直接读取短信、管理热点、执行 root 终端命令；开启网页管理并设置密码后，已登录的浏览器也能使用。强烈建议仅在局域网或 Tailscale 使用。" +
             if (current.publicAccess) "当前允许公网访问，请先检查允许的网段。" else "可设置独立操作密码。",
         confirm = "开启", danger = true, onDismiss = { confirmEnhanced = false }) {
         confirmEnhanced = false
@@ -509,7 +515,7 @@ fun WebUiPage(onBack: () -> Unit, onNavigate: (String) -> Unit) {
         state.setEnabled(false)
     }
     ConfirmDialog(show = clearPassword, title = "清除密码",
-        summary = (if (current.enhanced) "同时关闭增强功能和 web scrcpy 入口。" else "") + "清除后本机应用${if (current.lan) "和局域网设备" else ""}无需密码即可管理；" +
+        summary = (if (current.enhanced) "其它设备将不能使用增强功能，web scrcpy 入口一并关闭（管理器里照常可用）。" else "") + "清除后本机应用${if (current.lan) "和局域网设备" else ""}无需密码即可管理；" +
             if (current.tailscale && !current.tailscaleNoPassword) "Tailnet 设备将无法登录，直到重新设置密码。" else "建议只在可信环境下这样用。",
         confirm = "清除", danger = true, onDismiss = { clearPassword = false }) {
         clearPassword = false

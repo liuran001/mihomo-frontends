@@ -141,6 +141,9 @@ func saveConfig(path string, config Config) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// serviceNeeded：网页管理或增强功能任一启用时服务要运行；只开增强功能时不监听 TCP，只提供管理器用的 unix socket。
+func (c Config) serviceNeeded() bool { return c.Enabled || c.Enhanced.Enabled }
+
 func (c *Config) validate() error {
 	if c.Port < 1 || c.Port > 65535 {
 		return errors.New("端口须为 1–65535")
@@ -175,7 +178,7 @@ func (c *Config) validate() error {
 	if c.Enhanced.Scrcpy && c.Enhanced.ScrcpyPort == c.Port {
 		return errors.New("web scrcpy 端口不能等于网页管理端口")
 	}
-	return c.Enhanced.validate(c.Password != nil, c.RequirePassword)
+	return c.Enhanced.validate()
 }
 
 // parsePrefix 接受 CIDR 或单个地址（视为 /32、/128）。
