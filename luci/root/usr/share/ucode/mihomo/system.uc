@@ -36,9 +36,9 @@ function diagnostics() {
 	cmd('cat /proc/meminfo | head -n 3');
 	section('软件包');
 	if (fs.access('/usr/bin/apk', 'x'))
-		cmd("apk list -I 2>/dev/null | grep -E 'mihomo|kmod-sched|yq|curl'");
+		cmd("apk list -I 2>/dev/null | grep -E 'mihomo|kmod-sched|kmod-veth|yq|curl'");
 	else
-		cmd("opkg list-installed 2>/dev/null | grep -E 'mihomo|kmod-sched|yq|curl'");
+		cmd("opkg list-installed 2>/dev/null | grep -E 'mihomo|kmod-sched|kmod-veth|yq|curl'");
 	section('内核');
 	if (fs.access(P.BIN, 'x'))
 		cmd(U.shq(P.BIN) + ' -v | head -n 2');

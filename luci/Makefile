@@ -4,13 +4,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-mihomo-ebpf
-PKG_VERSION:=1.1.2
-PKG_RELEASE:=26110908
+PKG_VERSION:=1.1.3
+PKG_RELEASE:=26110909
 PKG_LICENSE:=MIT
 
 LUCI_TITLE:=LuCI support for mihomo (liuran001 eBPF fork)
 LUCI_DESCRIPTION:=状态、代理、连接、订阅、规则、设置、配置文件、日志、内核管理与首次向导
-LUCI_DEPENDS:=+luci-base +rpcd-mod-ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uci +ucode-mod-socket +yq +curl +ca-bundle +ip-full
+LUCI_DEPENDS:=+luci-base +rpcd-mod-ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uci +ucode-mod-socket +yq +curl +ca-bundle +ip-full +kmod-sched-core +kmod-sched-bpf +kmod-veth
 LUCI_PKGARCH:=all
 
 define Package/luci-app-mihomo-ebpf/conffiles

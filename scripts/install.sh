@@ -124,7 +124,7 @@ install_openwrt() {
 	pkg=$WORK/luci-app-mihomo-ebpf.$fmt
 	download_verified "$url" "$sha" "$pkg"
 	[ "$DRY_RUN" = 1 ] && { say 'DRY_RUN=1，跳过安装'; return 0; }
-	# 依赖（mihomo 运行所需的 curl、yq、ip-full 等）从软件源安装，先刷新软件源列表
+	# 依赖（mihomo 运行所需的 curl、yq、ip-full 与 eBPF 所需的内核模块等）从软件源安装，先刷新软件源列表
 	if [ "$fmt" = apk ]; then
 		say '刷新软件源…'
 		apk update >/dev/null 2>&1 || say '刷新软件源失败，继续尝试安装'
