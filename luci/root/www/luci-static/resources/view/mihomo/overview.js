@@ -50,6 +50,7 @@ function mapSummary(report) {
 		cls: st[1],
 		text: st[0] + ' · ' + maps.length + ' 个' + (pressured.length ? ' · ' + pressured.length + ' 个接近上限' : ''),
 		pressured: pressured,
+		unreadable: maps.filter(m => m.pressure === 'unknown' || m.pressure === 'unavailable').map(m => m.name),
 		busiest: busiest
 	};
 }
@@ -275,6 +276,8 @@ return view.extend({
 			mui.row('局域网数据面', ib.shared_data_plane || '-'),
 			ib.resources ? mui.row('eBPF 程序', String((res.programs || []).length) + ' 个') : '',
 			ib.resources ? mui.row('Map', E('span', { 'class': m.cls, title: m.pressured.join('、') }, m.text)) : mui.row('Map 占用', '按「详细诊断」时读取'),
+			ib.resources && m.unreadable.length ? mui.row('未能统计', E('span', { 'class': 'mh-muted' },
+				m.unreadable.join('、') + '（只影响诊断数字，不影响代理）')) : '',
 			m.busiest ? mui.row('最高占用', m.busiest.name + ' · ' + Math.round(m.busiest.ratio * 100) + '%') : '',
 			mui.row('后台清理', maint ? E('span', { 'class': 'mh-err' }, maint + ' 次失败') : E('span', { 'class': 'mh-ok' }, '正常')),
 			ib.resource_error ? mui.row('错误', E('span', { 'class': 'mh-err' }, ib.resource_error)) : ''

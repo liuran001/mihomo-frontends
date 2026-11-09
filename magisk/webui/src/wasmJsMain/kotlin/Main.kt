@@ -8,6 +8,15 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -187,7 +196,7 @@ fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier, l
 private val tabs = listOf("home" to "首页", "proxies" to "代理", "devices" to "设备", "settings" to "设置")
 
 /** 子页面（压栈显示，带返回）。 */
-private val subPages = setOf("connections", "profile", "core", "config", "config-edit", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced", "module")
+private val subPages = setOf("connections", "profile", "core", "config", "config-edit", "backups", "logs", "setup", "tailscale", "webui", "network", "substore", "enhanced", "module", "updates")
 
 private class Navigator {
     var tab by mutableStateOf("home")
@@ -327,16 +336,39 @@ private fun AppContent(navigator: Navigator, wide: Boolean) {
             }
         }
     }
+    // 方向锁：页面已经在上下滚动时，这一次手势里不再让分页器接管横向滑动。
+    // 否则上下滑时手指稍微往旁边偏，分页器会把累积的横向位移一次性用上，整页跳到半路再弹回。
+    var verticalLock by remember { mutableStateOf(false) }
+    val lockConnection = remember(pager) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && !pager.isScrollInProgress && abs(available.y) > abs(available.x)) verticalLock = true
+                return Offset.Zero
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val route = navigator.current
             val back: () -> Unit = { navigator.back() }
             val inTab = navigator.stack.isEmpty()
             if (!wide) {
-                Box(Modifier.fillMaxSize().then(if (inTab) Modifier else HiddenLayout)) {
+                Box(Modifier.fillMaxSize().then(if (inTab) Modifier else HiddenLayout)
+                    .nestedScroll(lockConnection)
+                    .pointerInput(Unit) {
+                        // 手指按下、全部抬起时都解锁，锁只作用于当前这一次手势
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            verticalLock = false
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                            } while (event.changes.any { it.pressed })
+                            verticalLock = false
+                        }
+                    }) {
                     // 不要越界回弹：在第一页 / 最后一页斜着滑时，整页会被拖出去再弹回，看起来像瞬移
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = tabs.size - 1,
-                        userScrollEnabled = inTab, key = { tabs[it].first }, overscrollEffect = null) { index ->
+                        userScrollEnabled = inTab && !verticalLock, key = { tabs[it].first }, overscrollEffect = null) { index ->
                         val near = index == pager.currentPage || index == pager.targetPage
                         LaunchedEffect(near) { if (near) visited[index] = true }
                         if (near || visited[index] == true) {

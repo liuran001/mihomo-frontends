@@ -790,6 +790,9 @@ private fun EbpfCard() {
                 if (res != null) {
                     KeyValue("已加载程序", "${(res["programs"] as? JsonArray)?.size ?: 0} 个")
                     KeyValue("Map 占用（上次诊断）", "$mapText · ${maps.size} 个" + if (pressured > 0) " · $pressured 个接近上限" else "", mapColor)
+                    val unreadable = maps.filter { it.string("pressure") in setOf("unknown", "unavailable") }.map { it.string("name") }
+                    if (unreadable.isNotEmpty()) Text("未能统计条目数：${unreadable.joinToString("、")}（只影响这里的诊断数字，不影响代理）",
+                        fontSize = 12.sp, color = Tone.muted)
                     val inspectionError = report?.string("error").orEmpty()
                     if (inspectionError.isNotEmpty()) Text("诊断未完成：$inspectionError", fontSize = 12.sp, color = Tone.warning)
                 } else Text("日常概览不扫描流量表；详细占用请手动诊断。", fontSize = 12.sp, color = Tone.muted)
