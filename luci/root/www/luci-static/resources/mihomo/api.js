@@ -70,25 +70,55 @@ const setupRender = named('setupRender', SETUP_RENDER);
 const setupAdapt = named('setupAdapt', SETUP_ADAPT);
 const coreSettings = named('coreSettings', CORE_SETTINGS);
 
-const HTTPS_REASON = '当前以 https 打开 LuCI，浏览器会拦截到控制器的 http 连接；实时功能请改用 http 访问 LuCI，或为控制器配置 TLS';
+const HTTPS_REASON = '当前以 https 打开 LuCI，浏览器会拦截到控制器的 http 连接；实时功能请改用 http 访问 LuCI，或在配置里启用 external-controller-tls（并在 tls 中配置证书），页面会自动改用 TLS 控制器';
+const TLS_HINT = '若控制器使用自签证书，请先让浏览器信任该证书';
 
-function baseUrl(c, protocol, hostname) {
-	let host = c.host || hostname;
+function hostPort(endpoint, hostname) {
+	let host = endpoint.host || hostname;
 	if (host.indexOf(':') >= 0 && host[0] !== '[') host = '[' + host + ']';
-	return 'http://' + host + ':' + c.port;
+	return host + ':' + endpoint.port;
+}
+
+function baseUrl(endpoint, hostname) {
+	return endpoint.scheme + '://' + hostPort(endpoint, hostname);
+}
+
+function endpointOf(scheme, c) {
+	if (!c)
+		return null;
+	return { scheme: scheme, listen: c.listen, host: c.host, port: c.port, reachable: !!c.reachable, reason: c.reason };
+}
+
+// 按页面协议选择控制器：http 页面优先明文，https 页面只能用 TLS（明文会被混合内容拦截）。
+// 首选监听不可用时退到另一个；https 页面不能退到 http。
+function chooseEndpoint(c, protocol) {
+	if (!c || !c.ok)
+		return { endpoint: null, reason: (c && c.error) || '无法读取控制器设置' };
+	const plain = endpointOf('http', c);
+	const tls = endpointOf('https', c.tls);
+	if (protocol === 'https:') {
+		if (tls && tls.reachable) return { endpoint: tls, reason: null };
+		if (plain.reachable) return { endpoint: null, reason: HTTPS_REASON };
+		return { endpoint: null, reason: (tls && tls.reason) || plain.reason };
+	}
+	if (plain.reachable) return { endpoint: plain, reason: null };
+	if (tls && tls.reachable) return { endpoint: tls, reason: null };
+	return { endpoint: null, reason: plain.reason || (tls && tls.reason) };
 }
 
 // zashboard 的地址，带上自动连接后端的参数（secret 在 # 之后，不会发给服务器）。
-// LuCI 以 https 打开时实时功能不可用，但面板本身走 http，仍然给出链接。
-function dashboardUrl(c, hostname) {
+// 面板与控制器的协议保持一致：https 控制器给出 https 链接，面板的 WebSocket 随之走 wss。
+function dashboardUrl(c, hostname, protocol) {
 	if (!c || !c.ok) return { url: null, reason: (c && c.error) || '无法读取控制器设置' };
 	if (!c.ui) return { url: null, reason: '配置中没有面板目录（external-ui），可在 设置 → 基础 → 控制器与面板 填写，例如 ./dashboard' };
-	if (!c.reachable) return { url: null, reason: c.reason };
-	const host = c.host || hostname.replace(/^\[(.*)\]$/, '$1');
+	const picked = chooseEndpoint(c, protocol || 'http:');
+	if (!picked.endpoint) return { url: null, reason: picked.reason };
+	const endpoint = picked.endpoint;
+	const host = endpoint.host || hostname.replace(/^\[(.*)\]$/, '$1');
 	const path = '/ui/' + (c.ui_name ? encodeURIComponent(c.ui_name) + '/' : '');
-	let q = 'hostname=' + encodeURIComponent(host) + '&port=' + c.port;
+	let q = 'hostname=' + encodeURIComponent(host) + '&port=' + endpoint.port + '&protocol=' + endpoint.scheme;
 	if (c.secret) q += '&secret=' + encodeURIComponent(c.secret);
-	return { url: baseUrl(c, 'http:', hostname) + path + '#/setup?' + q, reason: null };
+	return { url: baseUrl(endpoint, hostname) + path + '#/setup?' + q, reason: null };
 }
 
 function withToken(path, secret) {
@@ -119,12 +149,9 @@ function onState(f) {
 function controller(force) {
 	if (ctl && !force) return ctl;
 	ctl = rpcs.controller().then(c => {
-		let reason = null, base = null;
-		if (!c || !c.ok) reason = (c && c.error) || '无法读取控制器设置';
-		else if (!c.reachable) reason = c.reason;
-		else if (location.protocol === 'https:') reason = HTTPS_REASON;
-		else base = baseUrl(c, location.protocol, location.hostname);
-		current = { base: base, secret: (c && c.secret) || '', reason: reason, raw: c };
+		const picked = chooseEndpoint(c, location.protocol);
+		const base = picked.endpoint ? baseUrl(picked.endpoint, location.hostname) : null;
+		current = { base: base, secret: (c && c.secret) || '', reason: picked.reason, raw: c, endpoint: picked.endpoint };
 		return current;
 	}, e => {
 		// rpc 失败不缓存，下次调用时重试
@@ -165,7 +192,7 @@ function request(method, path, body, opts) {
 			if (e.name === 'AbortError') throw new Error('请求超时');
 			if (e.status) throw e;
 			setOnline(false);
-			throw new Error('无法连接 mihomo 控制器');
+			throw new Error('无法连接 mihomo 控制器' + (c.base.indexOf('https:') === 0 ? '；' + TLS_HINT : ''));
 		}).finally(() => clearTimeout(timer));
 	});
 }
@@ -275,10 +302,10 @@ function stream(path, onMessage, root) {
 
 return baseclass.extend({
 	rpc: rpcs,
-	baseUrl, withToken, dashboardUrl, controller, request, stream, poll, onState,
+	baseUrl, chooseEndpoint, withToken, dashboardUrl, controller, request, stream, poll, onState,
 	setupApply, setupRender, setupAdapt, coreSettings,
 	// 面板链接 { url, reason }
-	dashboard: () => controller().then(c => dashboardUrl(c.raw, location.hostname)),
+	dashboard: () => controller().then(c => dashboardUrl(c.raw, location.hostname, location.protocol)),
 	reason: () => current.reason,
 	isOnline: () => online,
 	get: (p, opts) => request('GET', p, undefined, opts),

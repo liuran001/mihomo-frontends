@@ -171,6 +171,10 @@ ok(!a.r.ok && index(a.r.error, '接口') >= 0, '需要补 eBPF 但没有接口�
 
 a = adapt(replace(BASE, 'external-controller: 0.0.0.0:19090', 'external-controller: 127.0.0.1:9090'));
 eq([a.r.ok, a.x['external-controller']], [true, '0.0.0.0:9090'], '控制器只听本机时改为 0.0.0.0，端口不变');
+a = adapt(replace(replace(BASE, 'external-controller: 0.0.0.0:19090', 'external-controller: 127.0.0.1:9090'),
+	'external-ui: ./dashboard', 'external-ui: ./dashboard\nexternal-controller-tls: 0.0.0.0:9443'));
+eq([a.x['external-controller'], length(filter(a.r.changes, c => c.id == 'controller'))], ['127.0.0.1:9090', 0],
+	'已有对外 TLS 控制器时明文保持只监听本机');
 a = adapt(without('external-controller'));
 eq(a.x['external-controller'], '0.0.0.0:9090', '没有控制器时添加');
 a = adapt(without('secret'));

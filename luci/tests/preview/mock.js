@@ -326,7 +326,7 @@ function rpc(method, args, opts) {
 			: { ok: true, running: true, pid: 5189, uptime: 3 * 86400 + 5 * 3600 + 12 * 60, rss_kb: 61840, version: CORE_VERSION, autostart: true, config_rev: rev, config_present: true, yq_present: true };
 	case 'controller':
 		if (fresh) return { ok: false, error: '无法读取配置文件' };
-		return { ok: true, listen: '0.0.0.0:9090', secret: opts.secret, host: '127.0.0.1', port: opts.ctrlPort, reachable: true, reason: null, ui: './dashboard', ui_name: 'zashboard' };
+		return { ok: true, listen: '0.0.0.0:9090', secret: opts.secret, host: '127.0.0.1', port: opts.ctrlPort, reachable: true, reason: null, tls: null, ui: './dashboard', ui_name: 'zashboard' };
 	case 'config_read':
 		return fresh ? { ok: false, error: '配置文件不存在：/etc/mihomo/config.yaml' } : snap.config_read;
 	case 'backups':

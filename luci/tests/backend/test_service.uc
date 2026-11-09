@@ -1,6 +1,7 @@
 'use strict';
 
 import * as fs from 'fs';
+import * as P from 'mihomo.paths';
 import * as S from 'mihomo.service';
 import * as SY from 'mihomo.system';
 import { ok, eq, done } from 'lib';
@@ -18,6 +19,19 @@ let c = S.controller();
 eq([c.ok, c.reachable, c.port], [true, false, null], '回环控制器标记为浏览器不可直连');
 ok(index(c.reason, '0.0.0.0:19090') >= 0, '提示正确写法', c.reason);
 ok('ui' in c && 'ui_name' in c, 'controller 返回面板目录字段');
+eq(c.tls, null, '没有 external-controller-tls 时 tls 为 null');
+
+// TLS 监听：与明文分开上报，页面按协议选择
+let conf = fs.readfile(P.CONFIG);
+fs.writefile(P.CONFIG, conf + '\nexternal-controller-tls: 127.0.0.1:19443\n');
+let ct = S.controller();
+ok(ct.tls && !ct.tls.reachable, 'TLS 控制器回环时标记为不可直连', ct.tls);
+ok(index(ct.tls.reason, 'external-controller-tls') >= 0, 'TLS 提示正确写法', ct.tls.reason);
+fs.writefile(P.CONFIG, conf + '\nexternal-controller-tls: 0.0.0.0:19443\n');
+ct = S.controller();
+eq([ct.tls.reachable, ct.tls.host, ct.tls.port], [true, null, 19443], 'TLS 控制器监听通配地址时浏览器可直连');
+fs.writefile(P.CONFIG, conf);
+eq(S.controller().tls, null, '恢复配置后 tls 为 null');
 
 eq(S.action('start').ok, true, '通过 init 脚本启动');
 sleep(1500);

@@ -330,7 +330,11 @@ function adapt(file, args) {
 	// 4. 外部控制、密钥与面板：LuCI 与 zashboard 都要从局域网连接控制器
 	let ec = x['external-controller'];
 	let addr = Y.parse_listen(ec != null ? '' + ec : '');
-	if (!addr || addr.loopback) {
+	// 已有对外监听的 TLS 控制器时，明文保持只绑本机即可（external-controller 仍须填写）
+	let tls_ec = x['external-controller-tls'];
+	let tls_addr = Y.parse_listen(tls_ec != null ? '' + tls_ec : '');
+	let tls_open = tls_addr && !tls_addr.loopback;
+	if (!addr || (addr.loopback && !tls_open)) {
 		let to = '0.0.0.0:' + (addr ? addr.port : 9090);
 		step('controller', '外部控制监听局域网', (addr ? ec + ' 只能本机访问' : '未开启外部控制') + '，改为 ' + to + '，LuCI 与面板通过它管理内核', false,
 			() => { basic['external-controller'] = to; });
