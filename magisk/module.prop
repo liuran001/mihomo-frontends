@@ -1,7 +1,7 @@
 id=mihomo-ebpf
 name=mihomo eBPF
-version=V1.1.1-26110907
-versionCode=26110907
+version=V1.1.2-26110908
+versionCode=26110908
 author=GitHub@liuran001
 description=mihomo eBPF 透明代理，网页里管理节点、订阅和内核。
 updateJson=https://github.com/liuran001/mihomo-frontends/releases/latest/download/update.json
