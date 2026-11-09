@@ -473,6 +473,36 @@ internal object LiveProxies {
         }
     }
 
+    /** Smart 组的节点权重：权重对话框打开的组名；null 为未打开。 */
+    var weightsOf by mutableStateOf<String?>(null)
+    var weights by mutableStateOf<List<LiveWeight>?>(null)
+    var weightsError by mutableStateOf("")
+
+    fun showWeights(group: LiveProxyGroup) {
+        val name = group.name
+        weightsOf = name
+        weights = null
+        weightsError = ""
+        liveScope.launch {
+            val result = liveCapture { liveControllerRead("/group/${liveEncodeComponent(name)}/weights") }
+            if (weightsOf != name) return@launch
+            val value = result.value
+            val list = (value?.get("weights") as? JsonArray)?.mapNotNull { it as? JsonObject }?.map {
+                LiveWeight(it.liveText("Name"), it.liveText("Rank"), it.liveNumber("Weight") ?: 0.0)
+            }.orEmpty()
+            when {
+                value == null -> weightsError = "无法读取权重：${result.error}"
+                list.isEmpty() -> weightsError = if (value.liveText("message").isNotEmpty() || value.liveText("error").isNotEmpty())
+                    "暂无权重数据，Smart 组需要一段时间学习" else "暂无权重数据"
+                else -> weights = list
+            }
+        }
+    }
+
+    fun hideWeights() {
+        weightsOf = null
+    }
+
     /** 单节点测速（点按节点上的延迟）。 */
     fun testNode(name: String) {
         if (name in testing) return
@@ -502,6 +532,8 @@ internal object LiveProxies {
         }
     }
 }
+
+internal data class LiveWeight(val name: String, val rank: String, val weight: Double)
 
 internal data class LiveNode(val type: String, val udp: Boolean, val icon: String = "")
 

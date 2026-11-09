@@ -45,6 +45,7 @@ function mockBackend() {
     { name: '节点选择', type: 'Selector', now: '香港 01', icon: svgIcon, all: ['自动选择', '香港 01', '香港 02', '日本 01', '美国 01', 'DIRECT'] },
     { name: '自动选择', type: 'URLTest', now: '香港 02', icon: svgIcon, all: ['香港 01', '香港 02', '日本 01', '美国 01'] },
     { name: '全部节点', type: 'Selector', now: many[3], all: many },
+    { name: '智能选择', type: 'Smart', now: '香港 01', icon: svgIcon, all: ['香港 01', '香港 02', '日本 01', '美国 01', '[取消][DDL]Hong Kong #Zone1-1', '[ikuuu]新加坡A02 | IEPL | x2'] },
     { name: '隐藏组', type: 'Selector', now: 'DIRECT', hidden: true, all: ['DIRECT'] },
   ];
   const delays = { '香港 01': 82, '香港 02': 64, '日本 01': 121, '美国 01': 233, DIRECT: 6 };
@@ -233,7 +234,12 @@ function mockBackend() {
       }
       case 'controller': {
         const p = payload.path || '';
-        if (p.startsWith('/proxies') && p.includes('/delay')) result = { ok: true, data: { delay: 70 + Math.round(Math.random() * 90) } };
+        const weightsOf = /^\/group\/(.+)\/weights$/.exec(p);
+        if (weightsOf) {
+          const g = groups.find((x) => x.name === decodeURIComponent(weightsOf[1]));
+          const ranks = ['MostUsed', 'OccasionalUsed', 'OccasionalUsed', 'RarelyUsed'];
+          result = { ok: true, data: { weights: g ? g.all.map((Name, i) => ({ Name, Rank: ranks[Math.min(i, 3)], Weight: Math.max(0, 100 - i * 20) })) : [] } };
+        } else if (p.startsWith('/proxies') && p.includes('/delay')) result = { ok: true, data: { delay: 70 + Math.round(Math.random() * 90) } };
         else if (p === '/proxies') {
           const proxies = {};
           for (const g of groups) proxies[g.name] = { name: g.name, type: g.type, now: g.now, all: g.all, icon: g.icon || '', hidden: !!g.hidden, history: [] };

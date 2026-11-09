@@ -24,6 +24,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.style.TextAlign
+import kotlin.math.roundToLong
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -107,6 +112,53 @@ fun ProxiesPage(onBack: (() -> Unit)?) {
             }
         }
     }
+    WeightsSheet()
+}
+
+private val WEIGHT_RANKS = mapOf("MostUsed" to "常用", "OccasionalUsed" to "偶尔", "RarelyUsed" to "很少")
+
+/** Smart 组的节点权重：节点名、使用频率、权重条（按组内最大权重归一）。 */
+@Composable
+private fun WeightsSheet() {
+    val state = LiveProxies
+    var title by remember { mutableStateOf("") }
+    state.weightsOf?.let { title = "$it · Smart 权重" }
+    Sheet(show = state.weightsOf != null, title = title, onDismissRequest = { state.hideWeights() }) {
+        val list = state.weights
+        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+            when {
+                state.weightsError.isNotEmpty() -> EmptyState(MiuixIcons.Regular.Info, state.weightsError)
+                list == null -> Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                else -> {
+                    val max = list.maxOf { it.weight }.takeIf { it > 0 } ?: 1.0
+                    Card(Modifier.weight(1f, fill = false), colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
+                        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            WeightRow("节点", "频率", null, "权重", header = true)
+                            for (w in list) WeightRow(w.name, WEIGHT_RANKS[w.rank] ?: w.rank.ifEmpty { "-" }, (w.weight / max).toFloat(),
+                                ((w.weight * 10).roundToLong() / 10.0).let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeightRow(name: String, rank: String, fraction: Float?, value: String, header: Boolean = false) {
+    val color = if (header) Tone.muted else MiuixTheme.colorScheme.onSurface
+    val size = if (header) 12.sp else 13.sp
+    Row(Modifier.fillMaxWidth().padding(vertical = if (header) 6.dp else 8.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(name, fontSize = size, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(rank, fontSize = size, color = if (header) color else Tone.muted, maxLines = 1, softWrap = false, modifier = Modifier.width(32.dp))
+        Box(Modifier.width(72.dp)) {
+            if (fraction != null) Box(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(MiuixTheme.colorScheme.surfaceContainerHighest)) {
+                Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).height(6.dp).clip(CircleShape).background(MiuixTheme.colorScheme.primary))
+            }
+        }
+        Text(value, fontSize = size, color = color, maxLines = 1, softWrap = false, textAlign = TextAlign.End, modifier = Modifier.width(36.dp))
+    }
 }
 
 @Composable
@@ -162,6 +214,10 @@ private fun ProxyGroupCard(group: LiveProxyGroup, open: Boolean, onToggle: () ->
                     Text("${group.options.size}", fontSize = 12.sp, color = Tone.muted)
                 }
                 Text(group.selected.ifEmpty { "未选择" }, fontSize = 13.sp, color = Tone.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (group.type == "Smart") Box(Modifier.height(28.dp).clip(RoundedCornerShape(8.dp)).clickable { state.showWeights(group) }
+                .padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+                Text("权重", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MiuixTheme.colorScheme.primary, maxLines = 1)
             }
             if (group.selected.isNotEmpty()) DelayChip(group.selected)
             Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = !testing) { state.test(group) }, contentAlignment = Alignment.Center) {
