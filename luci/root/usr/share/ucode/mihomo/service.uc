@@ -82,23 +82,29 @@ function action(name) {
 }
 
 // 浏览器直连控制器所需的信息；secret 只返回给已登录的 LuCI 会话（ACL 只读组）
+// 明文与 TLS 监听分别上报，页面按自己的协议选择；external-controller-tls 需同时配置 external-controller
+function endpoint(listen, addr, name) {
+	if (!addr)
+		return { listen: listen, host: null, port: null, reachable: false,
+			reason: listen ? '无法识别 ' + name + ' 的写法：' + listen : null };
+	if (addr.loopback)
+		return { listen: listen, host: null, port: null, reachable: false,
+			reason: (name == 'external-controller' ? '控制器' : 'TLS 控制器') +
+				'只监听本机地址，浏览器无法直连；请把 ' + name + ' 改为 0.0.0.0:' + addr.port };
+	return { listen: listen, host: addr.host, port: addr.port, reachable: true, reason: null };
+}
+
 function controller() {
 	let c = Y.controller_of(P.CONFIG);
 	if (!c)
 		return { ok: false, error: '无法读取配置文件' };
-	let res = { ok: true, listen: c.listen, secret: c.secret, host: null, port: null, reachable: false, reason: null,
-		ui: c.ui, ui_name: c.ui_name };
-	if (!c.addr)
-		res.reason = c.listen
-			? '无法识别 external-controller 的写法：' + c.listen
-			: '配置中没有 external-controller，页面无法连接 mihomo';
-	else if (c.addr.loopback)
-		res.reason = '控制器只监听本机地址，浏览器无法直连；请把 external-controller 改为 0.0.0.0:' + c.addr.port;
-	else {
-		res.reachable = true;
-		res.host = c.addr.host;
-		res.port = c.addr.port;
-	}
+	let plain = endpoint(c.listen, c.addr, 'external-controller');
+	if (!c.listen)
+		plain.reason = '配置中没有 external-controller，页面无法连接 mihomo';
+	let res = { ok: true, listen: plain.listen, secret: c.secret, host: plain.host, port: plain.port,
+		reachable: plain.reachable, reason: plain.reason, tls: null, ui: c.ui, ui_name: c.ui_name };
+	if (c.tls_listen)
+		res.tls = endpoint(c.tls_listen, c.tls_addr, 'external-controller-tls');
 	return res;
 }
 

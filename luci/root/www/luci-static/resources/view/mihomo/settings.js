@@ -369,7 +369,7 @@ return view.extend({
 			o.default = 'info';
 			o = s.taboption('net', form.Flag, 'profile__store-selected', '记住手动选择的节点');
 
-			o = s.taboption('ctl', form.Value, 'external-controller', '控制器地址', '本插件的实时页面与 zashboard 都通过它访问 mihomo；改动后页面会重新连接');
+			o = s.taboption('ctl', form.Value, 'external-controller', '控制器地址', '本插件的实时页面与 zashboard 都通过它访问 mihomo；配置了 external-controller-tls 时，https 页面会自动改用 TLS 控制器（需在配置文件页设置 tls.certificate 与 tls.private-key，证书须被浏览器信任）');
 			o.rmempty = false;
 			o.validate = (sid, v) => /^(\[[0-9a-fA-F:.]+\]|[^\s:\[\]]*):[0-9]{1,5}$/.test(v || '') ? true : '格式为 地址:端口，例如 0.0.0.0:9090';
 			o = s.taboption('ctl', form.Value, 'secret', '控制器密钥', '留空表示不需要密钥');

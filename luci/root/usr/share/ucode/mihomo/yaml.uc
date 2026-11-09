@@ -7,7 +7,8 @@ import * as U from 'mihomo.util';
 const MODES = ['rule', 'global', 'direct'];
 const REST_EXPR = 'explode(.) | del(.mode) | del(.["log-level"])';
 const RUNTIME_EXPR = '{"mode": .mode, "log-level": .["log-level"]}';
-const CONTROLLER_EXPR = '{"ec": .["external-controller"], "secret": .secret, "ui": .["external-ui"], "ui_name": .["external-ui-name"]}';
+const CONTROLLER_EXPR = '{"ec": .["external-controller"], "ec_tls": .["external-controller-tls"], "secret": .secret, ' +
+	'"ui": .["external-ui"], "ui_name": .["external-ui-name"]}';
 // 内核重载配置（PUT /configs）时不会重建的部分：控制器的地址、密钥、面板、TLS 证书、CORS、DoH。这些变了只能重启
 const HUB_EXPR = 'explode(.) | {"ec": .["external-controller"], "tls": .["external-controller-tls"], "unix": .["external-controller-unix"], ' +
 	'"pipe": .["external-controller-pipe"], "cors": .["external-controller-cors"], "doh": .["external-doh-server"], "secret": .secret, ' +
@@ -96,12 +97,14 @@ function controller_of(file) {
 		let text = fs.readfile(file);
 		if (text == null)
 			return null;
-		v = { ec: top_scalar(text, 'external-controller'), secret: top_scalar(text, 'secret'),
-			ui: top_scalar(text, 'external-ui'), ui_name: top_scalar(text, 'external-ui-name') };
+		v = { ec: top_scalar(text, 'external-controller'), ec_tls: top_scalar(text, 'external-controller-tls'),
+			secret: top_scalar(text, 'secret'), ui: top_scalar(text, 'external-ui'), ui_name: top_scalar(text, 'external-ui-name') };
 	}
 	let listen = v.ec != null ? '' + v.ec : null;
+	let tls_listen = v.ec_tls != null ? '' + v.ec_tls : null;
 	let str = (x) => (x != null && x !== '') ? '' + x : null;
-	return { listen: listen, secret: v.secret != null ? '' + v.secret : '', addr: parse_listen(listen), ui: str(v.ui), ui_name: str(v.ui_name) };
+	return { listen: listen, tls_listen: tls_listen, secret: v.secret != null ? '' + v.secret : '',
+		addr: parse_listen(listen), tls_addr: parse_listen(tls_listen), ui: str(v.ui), ui_name: str(v.ui_name) };
 }
 
 function norm(v, dflt) {

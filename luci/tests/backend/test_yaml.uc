@@ -32,9 +32,17 @@ eq(Y.query(P.CONFIG, '.mode'), 'rule', 'query 读取标量');
 let c = Y.controller_of(P.CONFIG);
 eq([c.listen, c.secret, c.addr.port], ['127.0.0.1:19090', 'test-secret', 19090], '从配置读取控制器');
 eq([c.ui, c.ui_name], [null, null], '没有 external-ui 时为 null');
+eq([c.tls_listen, c.tls_addr], [null, null], '没有 external-controller-tls 时为 null');
 
 let tmp = P.RUN_DIR + '/c2.yaml';
 let base = fs.readfile(P.CONFIG);
+U.write_file(tmp, base + 'external-controller-tls: 0.0.0.0:19443\n');
+let ct = Y.controller_of(tmp);
+eq([ct.tls_listen, ct.tls_addr.port, ct.tls_addr.wildcard], ['0.0.0.0:19443', 19443, true], '读取 external-controller-tls');
+U.write_file(tmp, base + 'external-controller-tls: "[::]:19443"\n');
+eq([Y.controller_of(tmp).tls_addr.host, Y.controller_of(tmp).tls_addr.port], [null, 19443], 'TLS 地址支持 IPv6 通配');
+U.write_file(tmp, base + 'external-controller-tls: "bad"\n');
+eq([Y.controller_of(tmp).tls_listen, Y.controller_of(tmp).tls_addr], ['bad', null], 'TLS 地址写法无效时为 null');
 U.write_file(tmp, replace(base, 'mode: rule', 'mode: global'));
 eq(Y.runtime_delta(P.CONFIG, tmp), { mode: 'global' }, '只改 mode 时返回在线修改项');
 U.write_file(tmp, replace(base, 'log-level: info', 'log-level: debug') + '# 尾部注释\n');
