@@ -147,6 +147,10 @@ return view.extend({
 		const gutter = E('pre', { 'class': 'mh-gutter', 'aria-hidden': 'true' });
 		const hl = E('pre', { 'class': 'mh-hl', 'aria-hidden': 'true' });
 		const wrap = E('div', { 'class': 'mh-code-wrap' }, [ hl, ta ]);
+		// 外层统一滚动：文本框不自己滚，高度、宽度由下面的高亮层撑开（与内容一样大），
+		// 行号、高亮层、文本框跟着同一个外层容器一起滚，不需要在 scroll 事件里互相同步，手机惯性滚动也不会错位
+		const scroller = E('div', { 'class': 'mh-editor' }, E('div', { 'class': 'mh-editor-inner' }, [ gutter, wrap ]));
+		this.scroller = scroller;
 		this.lint = E('div', { 'class': 'mh-lint' });
 		this.errLine = null;
 		ta.value = cfg.content;
@@ -162,14 +166,17 @@ return view.extend({
 			frame = 0;
 			const on = ta.value.length <= HL_LIMIT;
 			wrap.classList.toggle('mh-hl-on', on);
-			hl.innerHTML = on ? highlight(ta.value, this.errLine) : '';
-			hl.scrollTop = ta.scrollTop;
-			hl.scrollLeft = ta.scrollLeft;
+			// 不高亮时也要用原文撑开尺寸（放在属性里由 CSS 画出、且不可见，页内查找同样搜不到）
+			hl.innerHTML = on ? highlight(ta.value, this.errLine) : '<i data-t="' + attr(ta.value + '\n ') + '"></i>';
+			// 重画前（下一帧）文本框可能比内容小一瞬间，浏览器会让它自己滚一点去露出光标；撑开后归零，改由外层露出光标。
+			// 输入后都核对一次光标是否在可见范围（粘贴大段、撤销跳到别处时浏览器不一定会滚外层）
+			ta.scrollTop = 0;
+			ta.scrollLeft = 0;
+			if (document.activeElement === ta) this.reveal(ta.selectionEnd);
 		};
 		this.repaint = () => { if (!frame) frame = requestAnimationFrame(paint); };
 		const sync = () => {
 			gutter.setAttribute('data-t', lineNumbers(ta.value));
-			gutter.scrollTop = ta.scrollTop;
 			this.badge.hidden = ta.value === this.saved;
 			undoBtn.disabled = ta.value === this.saved;
 			this.repaint();
@@ -177,11 +184,6 @@ return view.extend({
 			lintTimer = setTimeout(() => this.checkSyntax(), 800);
 		};
 		ta.addEventListener('input', sync);
-		ta.addEventListener('scroll', () => {
-			gutter.scrollTop = ta.scrollTop;
-			hl.scrollTop = ta.scrollTop;
-			hl.scrollLeft = ta.scrollLeft;
-		});
 		ta.addEventListener('keydown', ev => {
 			if (ev.key === 'Tab') {
 				ev.preventDefault();
@@ -208,7 +210,7 @@ return view.extend({
 				mui.btn('校验', () => this.validate()),
 				mui.btn('保存并应用', () => this.save(), 'cbi-button-apply')
 			]),
-			E('div', { 'class': 'mh-editor' }, [ gutter, wrap ]),
+			scroller,
 			this.lint,
 			this.result
 		], { tools: [ this.badge, E('span', { 'class': 'mh-sub' }, 'Tab 缩进 · Ctrl+S 保存') ] });
@@ -255,12 +257,30 @@ return view.extend({
 		}, () => { this.linted = null; });
 	},
 
+	// 让文本中 pos 处在外层滚动容器里可见（跳行、粘贴大段文字后）
+	reveal(pos) {
+		const ta = this.ta, box = this.scroller;
+		const cs = getComputedStyle(ta);
+		const lh = parseFloat(cs.lineHeight) || 19, pad = parseFloat(cs.paddingTop) || 0;
+		const before = ta.value.slice(0, pos), line = before.split('\n').length - 1;
+		const top = pad + line * lh;
+		if (top < box.scrollTop || top + lh > box.scrollTop + box.clientHeight)
+			box.scrollTop = Math.max(0, top - box.clientHeight / 3);
+		// 横向按真实字宽算（中文比英文宽）
+		const ctx = (this.measure = this.measure || document.createElement('canvas').getContext('2d'));
+		ctx.font = cs.font;
+		// 行号栏固定在左边（sticky），文本区从它右边开始
+		const gutterW = ta.parentNode.offsetLeft;
+		const x = gutterW + (parseFloat(cs.paddingLeft) || 0) + ctx.measureText(before.slice(before.lastIndexOf('\n') + 1)).width;
+		if (x < box.scrollLeft + gutterW + 20 || x > box.scrollLeft + box.clientWidth - 40)
+			box.scrollLeft = Math.max(0, x - gutterW - (box.clientWidth - gutterW) / 2);
+	},
+
 	gotoLine(n) {
 		const ta = this.ta, r = lineRange(ta.value, n);
-		ta.focus();
+		ta.focus({ preventScroll: true });
 		ta.setSelectionRange(r.start, r.end);
-		const lh = parseFloat(getComputedStyle(ta).lineHeight) || 19;
-		ta.scrollTop = Math.max(0, (n - 6) * lh);
+		this.reveal(r.start);
 	},
 
 	validate() {
