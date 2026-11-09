@@ -240,6 +240,12 @@ function startController(port, secret) {
 			g.all.forEach(n => { const d = world.proxies[n] && world.proxies[n].all ? delayOf(world.proxies[n].now) : retest(n); if (d) out[n] = d; });
 			return setTimeout(() => send(res, 200, out), 600);
 		}
+		if ((mm = p.match(/^\/group\/(.+)\/weights$/)) && m === 'GET') {
+			const g = world.proxies[mm[1]];
+			if (!g || g.type !== 'Smart') return send(res, 404, { message: 'not found' });
+			const ranks = [ 'MostUsed', 'OccasionalUsed', 'OccasionalUsed', 'RarelyUsed' ];
+			return send(res, 200, { weights: g.all.slice(0, 8).map((Name, i) => ({ Name, Rank: ranks[Math.min(i, 3)], Weight: Math.max(0, 100 - i * 20) })) });
+		}
 		if (m === 'GET' && p === '/providers/proxies') return send(res, 200, { providers: world.providers });
 		if ((mm = p.match(/^\/providers\/proxies\/([^/]+)(\/healthcheck)?$/))) {
 			const pv = world.providers[mm[1]];

@@ -392,8 +392,9 @@ return view.extend({
 				E('thead', {}, E('tr', {}, [ E('th', {}, '节点'), E('th', {}, '使用频率'), E('th', {}, '权重') ])),
 				E('tbody', {}, list.map(w => E('tr', {}, [
 					E('td', {}, w.Name),
-					E('td', {}, RANKS[w.Rank] || w.Rank || '-'),
-					E('td', { 'class': 'mh-weight' }, [ mui.meter((w.Weight || 0) / max), E('span', {}, String(Math.round((w.Weight || 0) * 10) / 10)) ])
+					E('td', { 'class': 'mh-nowrap' }, RANKS[w.Rank] || w.Rank || '-'),
+					// 弹性布局放在单元格里面的 div 上：单元格本身设成 flex 会脱离表格行，边框和高度与同行其他格对不齐
+					E('td', {}, E('div', { 'class': 'mh-weight' }, [ mui.meter((w.Weight || 0) / max), E('span', {}, String(Math.round((w.Weight || 0) * 10) / 10)) ]))
 				])))
 			])));
 		}, e => box.replaceChildren(mui.empty('无法读取权重：' + e.message)));

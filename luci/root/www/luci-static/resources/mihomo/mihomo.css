@@ -187,8 +187,10 @@
 .mh-delay:hover{text-decoration:underline}
 .mh-delay.good{color:var(--mh-good-t)} .mh-delay.mid{color:var(--mh-mid-t)} .mh-delay.bad{color:var(--mh-bad-t)} .mh-delay.none{color:var(--text-muted,var(--text-color-medium,#5f666d))}
 .mh-weights{max-height:60vh;overflow:auto}
-.mh-weight{display:flex;align-items:center;gap:8px;min-width:150px}
+.mh-weights th:nth-child(2),.mh-nowrap{white-space:nowrap}
+.mh-weight{display:flex;align-items:center;gap:8px;min-width:120px}
 .mh-weight .mh-meter{flex:1 1 auto;margin:0}
+.mh-weight>span{flex:none;min-width:2.5em;text-align:right;font-variant-numeric:tabular-nums}
 
 /* 连接 */
 .mh-conn-table{min-width:1080px}
