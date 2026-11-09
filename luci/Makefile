@@ -4,8 +4,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-mihomo-ebpf
-PKG_VERSION:=1.1.4
-PKG_RELEASE:=26110910
+PKG_VERSION:=1.1.5
+PKG_RELEASE:=26110911
 PKG_LICENSE:=MIT
 
 LUCI_TITLE:=LuCI support for mihomo (liuran001 eBPF fork)
