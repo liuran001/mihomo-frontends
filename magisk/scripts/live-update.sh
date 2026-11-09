@@ -9,6 +9,14 @@ ADB=${NEW%/modules_update/*}
 CUR=$ADB/modules/$ID
 log() { printf '%s %s\n' "$(date '+%F %T' 2>/dev/null)" "$*"; }
 
+# 先离开 root 管理器 App 的 cgroup（同 common.sh 的 leave_app_cgroup；这里不引入 common.sh，因为它在要被换掉的目录里）。
+# 本脚本由安装器启动，默认留在管理器 App 的 cgroup 里：切到后台或关掉管理器后，系统会冻结或回收整个 cgroup，
+# 替换做到一半（旧网页管理服务已停、新的还没启动）就停住；后面由它启动的巡检、网页管理服务也会跟着被冻结。
+for procs in $(awk '$3=="cgroup2"{print $2"/cgroup.procs"}' /proc/mounts 2>/dev/null) \
+  /dev/freezer/cgroup.procs /dev/cpuset/cgroup.procs /dev/stune/cgroup.procs /dev/cpuctl/cgroup.procs; do
+  [ -w "$procs" ] && echo "$$" >"$procs" 2>/dev/null
+done
+
 case "$ID" in ''|*/*|.*) log "模块 id 无效：$ID"; exit 1 ;; esac
 [ "$NEW" = "$ADB/modules_update/$ID" ] || { log "新版本目录无效：$NEW"; exit 1; }
 
