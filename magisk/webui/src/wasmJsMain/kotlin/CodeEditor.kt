@@ -27,7 +27,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
             '.mh-code-ta::selection{background:var(--mh-sel)}' +
             '.mh-k{color:var(--mh-k)}.mh-s{color:var(--mh-s)}.mh-n{color:var(--mh-n)}' +
             '.mh-c{color:var(--mh-c);font-style:italic}.mh-m{color:var(--mh-m)}' +
-            '.mh-e{color:var(--mh-e);font-weight:700}.mh-cur{color:var(--mh-text)}';
+            '.mh-e{color:var(--mh-e);font-weight:700}.mh-cur{color:var(--mh-text)}' +
+            // 高亮层与行号的文字由 ::before 画出：浏览器页内查找搜不到生成内容，只命中文本框，不会一个词出现两处、把高亮层滚走
+            '.mh-code-pre [data-t]::before,.mh-code-gutter [data-t]::before{content:attr(data-t)}';
         document.head.appendChild(style);
     }
     const font = 'font:13px/20px ui-monospace,"SFMono-Regular","Roboto Mono","Noto Sans Mono","Droid Sans Mono",Menlo,Consolas,monospace;tab-size:2;letter-spacing:0;';
@@ -36,12 +38,17 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
     const inner = document.createElement('div');
     inner.style.cssText = 'position:relative;display:flex;width:max-content;min-width:100%;min-height:100%;';
     const gutter = document.createElement('div');
+    gutter.className = 'mh-code-gutter';
     gutter.style.cssText = 'position:sticky;left:0;z-index:2;flex:none;box-sizing:border-box;padding:8px 8px 8px 10px;text-align:right;white-space:pre;user-select:none;-webkit-user-select:none;' + font;
     const area = document.createElement('div');
     area.style.cssText = 'position:relative;flex:1;min-width:0;';
     const current = document.createElement('div');
     current.style.cssText = 'position:absolute;left:0;right:0;top:8px;height:20px;pointer-events:none;';
+    // 查找命中的位置：自己画底色，不把焦点给文本框（手机上会弹出键盘挡住内容）
+    const hit = document.createElement('div');
+    hit.style.cssText = 'position:absolute;height:20px;pointer-events:none;border-radius:3px;display:none;background:var(--mh-sel);';
     const pre = document.createElement('pre');
+    pre.className = 'mh-code-pre';
     pre.style.cssText = 'position:relative;margin:0;padding:8px 24px 8px 10px;white-space:pre;pointer-events:none;' + font;
     const ta = document.createElement('textarea');
     ta.className = 'mh-code-ta';
@@ -52,15 +59,16 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
     ta.setAttribute('autocorrect', 'off');
     ta.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;box-sizing:border-box;margin:0;padding:8px 24px 8px 10px;border:0;outline:none;resize:none;overflow:hidden;' +
         'background:transparent;color:transparent;-webkit-text-fill-color:transparent;white-space:pre;-webkit-tap-highlight-color:transparent;' + font;
-    area.append(current, pre, ta);
+    area.append(current, hit, pre, ta);
     inner.append(gutter, area);
     root.appendChild(inner);
 
     // ---------- 高亮 ----------
     const keyRe = /^(\s*)(- +)?((?:"[^"]*"|'[^']*'|[^\s#'"{}\[\],:][^#:]*?))(:)(?=\s|$)/;
     const scalarRe = /^(?:true|false|null|~|yes|no|on|off|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|0x[0-9A-Fa-f]+)$/i;
-    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const span = (cls, s) => s ? '<span class="mh-' + cls + '">' + esc(s) + '</span>' : '';
+    const attr = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const esc = (s) => s ? '<i data-t="' + attr(s) + '" style="font-style:normal"></i>' : '';
+    const span = (cls, s) => s ? '<span class="mh-' + cls + '" data-t="' + attr(s) + '"></span>' : '';
     const commentStart = (line) => {
         let quote = null;
         for (let i = 0; i < line.length; i++) {
@@ -82,7 +90,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         if (m) {
             out += esc(m[1]);
             if (m[2]) out += span('m', '-') + esc(m[2].slice(1));
-            out += span('k', m[3]) + ':';
+            out += span('k', m[3]) + esc(':');
             vs = m[0].length;
         } else {
             const t = code.trimStart();
@@ -116,7 +124,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         let html = '';
         for (let i = 1; i <= count; i++) {
             const cls = marks.has(i) ? 'mh-e' : (i === curLine + 1 ? 'mh-cur' : '');
-            html += (cls ? '<span class="' + cls + '">' + i + '</span>' : i) + (i < count ? '\n' : '');
+            html += '<span' + (cls ? ' class="' + cls + '"' : '') + ' data-t="' + i + '"></span>' + (i < count ? '\n' : '');
         }
         gutter.innerHTML = html;
         gutter.style.minWidth = (String(count).length * 8 + 22) + 'px';
@@ -137,14 +145,20 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         if (line !== curLine) { curLine = line; if (lineCount > 0) renderGutter(lineCount); }
         onCursor(line + 1, col + 1);
     };
+    // 按真实字宽算横坐标（中文等宽字符比英文宽，不能按固定字宽估）
+    const measure = document.createElement('canvas').getContext('2d');
+    const textX = (pos) => {
+        const start = ta.value.lastIndexOf('\n', pos - 1) + 1;
+        measure.font = getComputedStyle(pre).font;
+        return 10 + measure.measureText(ta.value.slice(start, pos)).width;
+    };
     // 让光标所在位置可见（跳行、查找后）
     const reveal = (pos) => {
         const line = lineOf(pos);
         const top = PAD + line * LH;
         if (top < root.scrollTop + LH) root.scrollTop = Math.max(0, top - root.clientHeight / 3);
         else if (top + LH * 2 > root.scrollTop + root.clientHeight) root.scrollTop = top - root.clientHeight / 3;
-        const col = pos - (ta.value.lastIndexOf('\n', pos - 1) + 1);
-        const x = col * 7.8 + 10;
+        const x = textX(pos);
         const visible = root.clientWidth - gutter.offsetWidth;
         if (x < root.scrollLeft + 20 || x > root.scrollLeft + visible - 40) root.scrollLeft = Math.max(0, x - visible / 2);
     };
@@ -158,7 +172,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         }
     };
 
-    ta.addEventListener('input', () => { schedule(); cursor(); onInput(ta.value); });
+    ta.addEventListener('input', () => { hit.style.display = 'none'; schedule(); cursor(); onInput(ta.value); });
     ta.addEventListener('keydown', (event) => {
         event.stopPropagation();
         if (event.isComposing || event.keyCode === 229) return;
@@ -178,10 +192,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         }
     });
     document.addEventListener('selectionchange', () => { if (document.activeElement === ta) cursor(); });
-    ta.addEventListener('click', cursor);
+    ta.addEventListener('click', () => { hit.style.display = 'none'; cursor(); });
     ta.addEventListener('keyup', cursor);
 
-    root.__set = (value) => { if (ta.value !== value) { ta.value = value; schedule(); } };
+    root.__set = (value) => { if (ta.value !== value) { ta.value = value; hit.style.display = 'none'; schedule(); } };
     root.__theme = (json) => {
         const t = JSON.parse(json);
         for (const k in t) root.style.setProperty('--mh-' + k, t[k]);
@@ -218,10 +232,17 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
         let total = 0;
         for (let i = text.indexOf(q); i !== -1; i = text.indexOf(q, i + q.length)) total++;
         if (!total) return 0;
-        let at = backward ? text.lastIndexOf(q, ta.selectionStart - 1) : text.indexOf(q, ta.selectionEnd);
+        const from = ta.selectionStart, to = ta.selectionEnd;
+        // 向前找时从选区开头之前找；已在开头就绕回最后一处（lastIndexOf 的起点为负数时仍会命中开头）
+        let at = backward ? (from > 0 ? text.lastIndexOf(q, from - 1) : -1) : text.indexOf(q, to);
         if (at === -1) at = backward ? text.lastIndexOf(q) : text.indexOf(q);
-        ta.focus({ preventScroll: true });
+        // 不聚焦文本框，只移动选区（之后点进去光标就在这里）并画出命中位置
         ta.setSelectionRange(at, at + q.length);
+        const left = textX(at);
+        hit.style.top = (PAD + lineOf(at) * LH) + 'px';
+        hit.style.left = left + 'px';
+        hit.style.width = Math.max(2, textX(at + q.length) - left) + 'px';
+        hit.style.display = '';
         reveal(at);
         cursor();
         return total;

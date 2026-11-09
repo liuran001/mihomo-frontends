@@ -45,8 +45,18 @@ function esc(s) {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// 高亮层的文字放在 data-t 属性里、由 CSS ::before 画出来：浏览器的页内查找（Ctrl+F）搜不到生成内容，
+// 只会命中下面的文本框，不会同一个词出现两次，也不会把高亮层单独滚走、和文本框错位
+function attr(s) {
+	return esc(s).replace(/"/g, '&quot;');
+}
+
+function txt(s) {
+	return s ? '<i data-t="' + attr(s) + '"></i>' : '';
+}
+
 function span(cls, s) {
-	return s ? '<span class="mh-hl-' + cls + '">' + esc(s) + '</span>' : '';
+	return s ? '<span class="mh-hl-' + cls + '" data-t="' + attr(s) + '"></span>' : '';
 }
 
 // 注释从第一个不在引号里、前面是空白的 # 开始
@@ -70,11 +80,11 @@ function value(v) {
 	else if (/^[&*!]\S*/.test(body)) {
 		const t = /^([&*!]\S*)(.*)$/.exec(body);
 		html = span('mark', t[1]) + value(t[2]);
-		return esc(m[1]) + html + esc(m[3]);
+		return txt(m[1]) + html + txt(m[3]);
 	} else if (SCALAR.test(body)) html = span('num', body);
 	else if (/^[|>][-+]?\d*$/.test(body) || /^[\[\]{},]+$/.test(body)) html = span('mark', body);
-	else html = esc(body);
-	return esc(m[1]) + html + esc(m[3]);
+	else html = txt(body);
+	return txt(m[1]) + html + txt(m[3]);
 }
 
 function highlightLine(line) {
@@ -82,7 +92,7 @@ function highlightLine(line) {
 	let out = '';
 	let rest = code;
 	const lead = /^(\s*)((?:-\s+)*)/.exec(rest);
-	out += esc(lead[1]) + span('mark', lead[2]);
+	out += txt(lead[1]) + span('mark', lead[2]);
 	rest = rest.slice(lead[0].length);
 	const key = /^("[^"]*"|'[^']*'|[^\s#'"\[\]{},:][^:#]*?)(\s*:)(?=\s|$)/.exec(rest);
 	if (key) {
@@ -158,7 +168,7 @@ return view.extend({
 		};
 		this.repaint = () => { if (!frame) frame = requestAnimationFrame(paint); };
 		const sync = () => {
-			gutter.textContent = lineNumbers(ta.value);
+			gutter.setAttribute('data-t', lineNumbers(ta.value));
 			gutter.scrollTop = ta.scrollTop;
 			this.badge.hidden = ta.value === this.saved;
 			undoBtn.disabled = ta.value === this.saved;

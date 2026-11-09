@@ -22,9 +22,9 @@ assert.deepStrictEqual(cfg.lineRange('a\nbb', 9), { start: 2, end: 4 });
 assert.strictEqual(cfg.errorLine('go-yaml load error in parser (while parsing a block mapping) at L1.C1-L4.C2: did not find expected key'), 4);
 // 高亮：键、字符串、标量、注释、列表符号；HTML 转义；错误行包裹
 const h = cfg.highlightLine('  - name: "a<b" # 备注');
-assert.ok(h.includes('<span class="mh-hl-key">name</span>') && h.includes('<span class="mh-hl-str">"a&lt;b"</span>') && h.includes('<span class="mh-hl-cmt"># 备注</span>') && h.includes('mh-hl-mark">- </span>'), h);
-assert.ok(cfg.highlightLine('port: 7890').includes('mh-hl-num">7890<'));
+assert.ok(h.includes('<span class="mh-hl-key" data-t="name"></span>') && h.includes('<span class="mh-hl-str" data-t="&quot;a&lt;b&quot;"></span>') && h.includes('<span class="mh-hl-cmt" data-t="# 备注"></span>') && h.includes('mh-hl-mark" data-t="- "></span>') && !/>[^<\n]+</.test(h), h);
+assert.ok(cfg.highlightLine('port: 7890').includes('mh-hl-num" data-t="7890"'));
 assert.ok(cfg.highlightLine('url: http://x/#frag').indexOf('mh-hl-cmt') < 0, '# 前没有空白时不是注释');
-assert.ok(cfg.highlightLine("rules: ['a: b']").includes("mh-hl-key\">rules<"));
+assert.ok(cfg.highlightLine("rules: ['a: b']").includes('mh-hl-key" data-t="rules"'));
 assert.ok(cfg.highlight('a: 1\nb: [', 2).includes('<span class="mh-hl-err">'), '错误行加标记');
 assert.strictEqual(cfg.highlight('a\n', null).split('\n').length, 3, '末尾补一行，避免最后的空行高度对不齐');

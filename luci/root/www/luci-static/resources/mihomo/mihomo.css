@@ -109,6 +109,8 @@
 .mh-code-wrap>.mh-code{position:relative;z-index:1}
 .mh-hl{position:absolute;inset:0;margin:0;padding:10px 12px;white-space:pre;overflow:hidden;pointer-events:none;color:var(--text,var(--text-color-high,#1d232a));tab-size:2;display:none}
 .mh-hl-on>.mh-hl{display:block}
+.mh-hl [data-t]::before,.mh-gutter[data-t]::before{content:attr(data-t)}
+.mh-hl i{font-style:normal}
 .mh-hl-on>.mh-code{color:transparent;caret-color:var(--text,var(--text-color-high,#1d232a))}
 .mh-hl-on>.mh-code::selection{color:transparent;background:color-mix(in srgb,var(--mh-accent,#3b82f6) 30%,transparent)}
 .mh-hl-key{color:color-mix(in srgb,#2f81f7 75%,var(--text,var(--text-color-high,#1d232a)))}
