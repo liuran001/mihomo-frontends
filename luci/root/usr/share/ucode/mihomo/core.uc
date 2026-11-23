@@ -24,6 +24,8 @@ const KEEP_MIN_FREE = 4 * 1024 * 1024;
 function asset_for(machine, cpuinfo) {
 	if (machine == 'aarch64' || machine == 'arm64')
 		return 'linux-arm64';
+	if (machine == 'loongarch64')
+		return 'linux-loong64-abi2';
 	if (machine != 'x86_64' && machine != 'amd64')
 		return null;
 	let m = match(cpuinfo ?? '', /flags[ \t]*:([^\n]*)/);

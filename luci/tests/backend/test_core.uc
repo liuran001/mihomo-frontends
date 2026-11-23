@@ -16,6 +16,7 @@ if (substr(P.BIN, 0, 9) != '/tmp/mlt/') {
 /* ---------- 纯函数 ---------- */
 
 eq(C.asset_for('aarch64', ''), 'linux-arm64', 'aarch64');
+eq(C.asset_for('loongarch64', ''), 'linux-loong64-abi2', 'loongarch64 用 ABI2');
 let flags = (f) => 'processor\t: 0\nflags\t\t: fpu ' + f + ' ht\n';
 eq(C.asset_for('x86_64', flags('sse4_2 popcnt avx2 bmi2 fma')), 'linux-amd64-v3', 'x86_64 支持 avx2/bmi2/fma 用 v3');
 eq(C.asset_for('x86_64', flags('sse4_2 popcnt')), 'linux-amd64-v2', 'x86_64 支持 sse4_2/popcnt 用 v2');
